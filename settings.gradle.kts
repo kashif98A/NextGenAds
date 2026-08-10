@@ -22,6 +22,7 @@ dependencyResolutionManagement {
   }
 }
 
+
 rootProject.name = "Ads Demo Next GEN"
 
 include(":app")
