@@ -1,0 +1,6 @@
+{
+  "name": "AdSDK Demo",
+  "description": "An advanced Google Mobile Ads SDK module for Jetpack Compose, MVVM, Firebase Remote Config, Hilt integration, with preloading, frequency capping, cooldowns, and analytics tracking.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
