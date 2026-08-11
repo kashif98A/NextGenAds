@@ -32,4 +32,4 @@
 -keepclassmembers class * {
     @com.squareup.moshi.Json <fields>;
 }
--keep class * implements com.example.adsImp.data.** { *; }
+-keep class * implements com.admodule.next.genads.adsImp.data.** { *; }

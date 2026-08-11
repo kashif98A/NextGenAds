@@ -1,0 +1,8 @@
+# JitPack build config. Builds and publishes only the :nextgenads library module.
+# Consume it from another project with:
+#   repositories { maven { url = uri("https://jitpack.io") } }
+#   dependencies { implementation("com.github.kashif98A:nextgenads:<tag-or-commit>") }
+jdk:
+  - openjdk17
+install:
+  - ./gradlew :nextgenads:publishToMavenLocal -x lint --no-daemon

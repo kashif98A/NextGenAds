@@ -4,13 +4,13 @@ plugins {
 }
 
 android {
-  namespace = "com.example"
-  compileSdk { version = release(36) { minorApiLevel = 1 } }
+  namespace = "com.admodule.next.genads"
+  compileSdk { version = release(37) { minorApiLevel = 1 } }
 
   defaultConfig {
-    applicationId = "com.aistudio.admodule.xkyzpf"
+    applicationId = "com.admodule.next.genads"
     minSdk = 24
-    targetSdk = 36
+    targetSdk = 37
     versionCode = 1
     versionName = "1.0"
   }
@@ -43,8 +43,8 @@ android {
     }
   }
   compileOptions {
-    sourceCompatibility = JavaVersion.VERSION_11
-    targetCompatibility = JavaVersion.VERSION_11
+    sourceCompatibility = JavaVersion.VERSION_17
+    targetCompatibility = JavaVersion.VERSION_17
   }
   buildFeatures {
     compose = true
@@ -53,6 +53,10 @@ android {
 }
 
 dependencies {
+  // The reusable ad + consent code now lives in the :nextgenads library. Its ads-mobile-sdk and
+  // user-messaging-platform deps are exposed as `api`, so they arrive transitively here.
+  implementation(project(":nextgenads"))
+
   implementation(platform(libs.androidx.compose.bom))
   implementation(libs.androidx.activity.compose)
   implementation(libs.androidx.compose.material.icons.core)
@@ -65,7 +69,6 @@ dependencies {
   implementation(libs.androidx.lifecycle.runtime.ktx)
   implementation(libs.androidx.lifecycle.viewmodel.compose)
   implementation(libs.androidx.lifecycle.process)
-  implementation(libs.ads.mobile.sdk)
   implementation(libs.kotlinx.coroutines.android)
   implementation(libs.kotlinx.coroutines.core)
   debugImplementation(libs.androidx.compose.ui.tooling)

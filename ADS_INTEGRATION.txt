@@ -39,7 +39,7 @@ ads/
 Copy:  app/src/main/java/com/example/ads/   into the new project.
 
 Package names: a Kotlin package does NOT have to match your applicationId, so
-you may keep `package com.example.ads...` as-is, OR do a global rename to
+you may keep `package com.admodule.next.genads.ads...` as-is, OR do a global rename to
 `yourpkg.ads.*`. Either one compiles.
 
 
