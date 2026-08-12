@@ -93,10 +93,20 @@ app/                                         # demo app (depends on :nextgenads)
 
 1. Replace the test IDs in `nextgenads/.../adsImp/AdUnitIds.kt` with your production ad unit IDs.
 2. Replace `AdsManager.APP_ID` in `adsImp/manager/AdsManager.kt` with your real AdMob **App ID**.
+3. Update the App ID `<meta-data>` in the **app manifest** to the same value (see below).
 
-The App ID is passed **programmatically** via `InitializationConfig.Builder(APP_ID)` — no
-`<meta-data>` App ID tag is required. The only permissions needed (`INTERNET`,
-`ACCESS_NETWORK_STATE`) are declared in the library manifest and merged into your app.
+The Next-Gen Ads SDK receives the App ID **programmatically** via `InitializationConfig.Builder(APP_ID)`,
+but the **UMP consent SDK** reads it from a manifest `<meta-data>` tag — so the app manifest **must**
+declare it, or `requestConsentInfoUpdate()` fails, `canRequestAds` never becomes true, and no ads load:
+
+```xml
+<meta-data
+    android:name="com.google.android.gms.ads.APPLICATION_ID"
+    android:value="ca-app-pub-XXXX~XXXX" /> <!-- keep in sync with AdsManager.APP_ID -->
+```
+
+The only permissions needed (`INTERNET`, `ACCESS_NETWORK_STATE`) are declared in the library
+manifest and merged into your app.
 
 ## GDPR consent (UMP)
 

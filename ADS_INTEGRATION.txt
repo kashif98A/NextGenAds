@@ -72,8 +72,19 @@ defaultConfig { minSdk = 24 }        // 23 minimum
 <uses-permission android:name="android.permission.INTERNET" />
 <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
-NOTE: No <meta-data> App ID tag is required. This build passes the App ID
-      PROGRAMMATICALLY (see AdsManager.APP_ID in Step 4).
+REQUIRED <meta-data> — add your AdMob App ID inside <application>:
+
+    <meta-data
+        android:name="com.google.android.gms.ads.APPLICATION_ID"
+        android:value="ca-app-pub-XXXX~XXXX" />   <!-- keep in sync with AdsManager.APP_ID -->
+
+WHY IT'S REQUIRED: the Next-Gen Ads SDK reads the App ID from InitializationConfig
+(AdsManager.APP_ID, Step 4), so init alone would work without the meta-data. BUT the UMP
+consent SDK (user-messaging-platform) is a SEPARATE library that reads the App ID from THIS
+manifest meta-data — it does not see the programmatic one. Omit it and
+UserMessagingPlatform.requestConsentInfoUpdate() fails, canRequestAds never turns true, the
+Ads SDK is never initialized, and NO ads load. Because every ad in this module is gated
+behind consent, a missing meta-data tag silently breaks ALL ad formats.
 
 
 -------------------------------------------------------------------------------
