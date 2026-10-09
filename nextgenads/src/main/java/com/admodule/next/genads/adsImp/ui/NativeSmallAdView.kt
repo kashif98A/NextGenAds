@@ -3,7 +3,6 @@ package com.admodule.next.genads.adsImp.ui
 import android.content.Context
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
-import android.util.Log
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
@@ -20,20 +19,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
-import com.google.android.libraries.ads.mobile.sdk.common.LoadAdError
-import com.google.android.libraries.ads.mobile.sdk.nativead.MediaView
 import com.google.android.libraries.ads.mobile.sdk.nativead.NativeAd
-import com.google.android.libraries.ads.mobile.sdk.nativead.NativeAdLoader
-import com.google.android.libraries.ads.mobile.sdk.nativead.NativeAdLoaderCallback
-import com.google.android.libraries.ads.mobile.sdk.nativead.NativeAdRequest
 import com.google.android.libraries.ads.mobile.sdk.nativead.NativeAdView
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.admodule.next.genads.adsImp.AdUnitIds
 import com.admodule.next.genads.adsImp.manager.AdsManager
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
-
-private const val TAG = "NativeSmallAdView"
 
 @Composable
 fun NativeSmallAdView(
@@ -42,9 +31,9 @@ fun NativeSmallAdView(
     adUnitId: String = AdUnitIds.NATIVE,
     isEnabled: Boolean = true
 ) {
-    // Gate: show nothing unless this unit is enabled (remote-config style flag) AND online.
-    val isOnline by adsManager.networkMonitor.isOnline.collectAsStateWithLifecycle(initialValue = true)
-    if (!isEnabled || !isOnline) return
+    // Gate: show nothing unless this unit is enabled (remote-config style flag). Being offline only
+    // blocks the FIRST request; an ad already on screen survives a brief network drop.
+    if (!isEnabled || !rememberCanShowInlineAd(adsManager)) return
 
     // Material 3 Colors extracted safely for XML rendering integration
     val primaryColor = MaterialTheme.colorScheme.primary.toArgb()
@@ -53,45 +42,9 @@ fun NativeSmallAdView(
     val onSurfaceColor = MaterialTheme.colorScheme.onSurfaceVariant.toArgb()
     val textColor = MaterialTheme.colorScheme.onSurface.toArgb()
 
-    var nativeAdState by remember { mutableStateOf<NativeAd?>(null) }
-    var isLoadingAd by remember { mutableStateOf(true) }
-    var hasError by remember { mutableStateOf(false) }
-
-    // Fetch Native Ad inside a disposable side effect
-    LaunchedEffect(adUnitId) {
-        isLoadingAd = true
-        hasError = false
-        try {
-            val adRequest = NativeAdRequest.Builder(
-                adUnitId,
-                listOf(NativeAd.NativeAdType.NATIVE)
-            ).build()
-
-            // The Next Gen SDK requires ads to be loaded off the main thread.
-            withContext(Dispatchers.IO) {
-                NativeAdLoader.load(
-                    adRequest,
-                    object : NativeAdLoaderCallback {
-                        override fun onNativeAdLoaded(nativeAd: NativeAd) {
-                            nativeAdState = nativeAd
-                            isLoadingAd = false
-                            Log.d(TAG, "Native Small Ad Loaded successfully.")
-                        }
-
-                        override fun onAdFailedToLoad(adError: LoadAdError) {
-                            isLoadingAd = false
-                            hasError = true
-                            Log.e(TAG, "Native Small Ad failed to load: ${adError.message}")
-                        }
-                    }
-                )
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Critical error creating NativeAdLoader: ${e.message}")
-            isLoadingAd = false
-            hasError = true
-        }
-    }
+    // Drawn from the shared pool: instant when an ad is cached, and never wasted if this view leaves
+    // the screen before the load finishes. The ad is destroyed when this slot leaves composition.
+    val slot = rememberNativeAdSlot(adsManager, adUnitId)
 
     Box(
         modifier = modifier
@@ -99,22 +52,19 @@ fun NativeSmallAdView(
             .wrapContentHeight(),
         contentAlignment = Alignment.Center
     ) {
-        if (isLoadingAd) {
-            NativeAdPlaceholder(
+        when (slot) {
+            NativeAdSlot.Loading -> NativeAdPlaceholder(
                 modifier = Modifier.fillMaxWidth(),
                 isMedium = false
             )
-        } else if (!hasError && nativeAdState != null) {
-            val loadedAd = nativeAdState!!
-
-            AndroidView(
+            is NativeAdSlot.Ready -> AndroidView(
                 modifier = Modifier
                     .fillMaxWidth()
                     .wrapContentHeight(),
                 factory = { ctx ->
                     createDynamicSmallNativeView(
                         ctx,
-                        loadedAd,
+                        slot.ad,
                         primaryColor,
                         onPrimaryColor,
                         surfaceColor,
@@ -122,14 +72,9 @@ fun NativeSmallAdView(
                         textColor
                     )
                 },
-                update = {},
-                onRelease = {
-                    Log.d(TAG, "Releasing Small NativeAd assets.")
-                    nativeAdState?.destroy()
-                }
+                update = {}
             )
-        } else {
-            Spacer(modifier = Modifier.height(0.dp))
+            NativeAdSlot.Empty -> Unit
         }
     }
 }
@@ -270,12 +215,6 @@ private fun createDynamicSmallNativeView(
         }
     }
 
-    // Hidden MediaView required by the Next Gen SDK's registerNativeAd binding.
-    val mediaView = MediaView(context).apply {
-        layoutParams = LinearLayout.LayoutParams(1, 1)
-        visibility = View.GONE
-    }
-
     // Build overall hierarchy: icon + text content row on top, full-width CTA beneath.
     mainLayout.addView(iconContainer)
     mainLayout.addView(textLayout)
@@ -289,7 +228,6 @@ private fun createDynamicSmallNativeView(
     }
     outerLayout.addView(mainLayout)
     outerLayout.addView(ctaButton)
-    outerLayout.addView(mediaView)
 
     nativeAdView.addView(outerLayout)
 
@@ -307,8 +245,10 @@ private fun createDynamicSmallNativeView(
         iconContainer.visibility = View.GONE
     }
 
-    // Inform the SDK that the views are populated for this native ad.
-    nativeAdView.registerNativeAd(nativeAd, mediaView)
+    // Inform the SDK that the views are populated for this native ad. This compact template has no
+    // media slot, so no MediaView is registered: a hidden / 1px MediaView would count as an
+    // obscured ad asset (AdMob native policy) and can stop impressions from being counted.
+    nativeAdView.registerNativeAd(nativeAd, null)
 
     return nativeAdView
 }

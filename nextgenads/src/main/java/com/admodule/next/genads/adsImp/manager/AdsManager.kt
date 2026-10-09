@@ -1,41 +1,73 @@
 package com.admodule.next.genads.adsImp.manager
 
 import android.content.Context
+import android.content.pm.PackageManager
 import android.os.Bundle
 import android.util.Log
+import androidx.lifecycle.DefaultLifecycleObserver
+import androidx.lifecycle.LifecycleOwner
+import androidx.lifecycle.ProcessLifecycleOwner
 import com.google.android.gms.ads.mediation.admob.AdMobAdapter
 import com.google.android.libraries.ads.mobile.sdk.MobileAds
 import com.google.android.libraries.ads.mobile.sdk.banner.AdSize
 import com.google.android.libraries.ads.mobile.sdk.banner.BannerAdRequest
 import com.google.android.libraries.ads.mobile.sdk.common.AdRequest
 import com.google.android.libraries.ads.mobile.sdk.initialization.InitializationConfig
+import com.admodule.next.genads.adsImp.AdUnitIds
 import com.admodule.next.genads.adsImp.data.NetworkMonitor
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.ConcurrentLinkedQueue
+import java.util.concurrent.CopyOnWriteArrayList
+import java.util.concurrent.atomic.AtomicBoolean
 
 class AdsManager(
-    private val context: Context,
+    internal val context: Context,
     val networkMonitor: NetworkMonitor
 ) {
     private val TAG = "AdsManager"
 
     companion object {
-        // Next Gen GMA SDK consumes the AdMob App ID programmatically via InitializationConfig.
-        // Sample AdMob App ID; replace with your production App ID.
+        // Google's sample AdMob App ID. Only a fallback: the real App ID is read from the
+        // com.google.android.gms.ads.APPLICATION_ID manifest meta-data (see [appId]).
         const val APP_ID = "ca-app-pub-3940256099942544~3347511713"
+
+        private const val APP_ID_META_DATA = "com.google.android.gms.ads.APPLICATION_ID"
     }
+
+    /** Process-wide background scope for SDK init, loads and retries (the SDK must run off main). */
+    internal val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     private val _isInitialized = MutableStateFlow(false)
     val isInitialized: StateFlow<Boolean> = _isInitialized.asStateFlow()
 
+    private val initStarted = AtomicBoolean(false)
+    private val pendingInitCallbacks = ConcurrentLinkedQueue<() -> Unit>()
+
+    /** True between a full-screen ad's show() and its dismiss/fail — blocks a stacked App Open ad. */
+    internal val fullScreenAdShowing = AtomicBoolean(false)
+    val isFullScreenAdShowing: Boolean get() = fullScreenAdShowing.get()
+
+    private val skipNextAppOpen = AtomicBoolean(false)
+
+    @Volatile
+    var isAppInForeground: Boolean = false
+        private set
+
+    private val nativeAdManagers = ConcurrentHashMap<String, NativeAdManager>()
+
+    private val eventListeners = CopyOnWriteArrayList<AdEventListener>()
+
     init {
         // Collect network changes to reactively preload or handle states if needed
-        CoroutineScope(Dispatchers.IO).launch {
+        scope.launch {
             networkMonitor.isOnline.collect { online ->
                 Log.d(TAG, "Network status changed: Online=$online")
                 if (online && _isInitialized.value) {
@@ -44,34 +76,86 @@ class AdsManager(
                 }
             }
         }
+
+        // Track foreground state: retries pause in the background, and coming back to the foreground
+        // refills any cache that expired or gave up while the app was away.
+        CoroutineScope(Dispatchers.Main).launch {
+            ProcessLifecycleOwner.get().lifecycle.addObserver(object : DefaultLifecycleObserver {
+                override fun onStart(owner: LifecycleOwner) {
+                    isAppInForeground = true
+                    if (_isInitialized.value) preloadAllWhenReady()
+                }
+
+                override fun onStop(owner: LifecycleOwner) {
+                    isAppInForeground = false
+                }
+            })
+        }
     }
 
     /**
-     * Initializes the Next Gen GMA SDK.
+     * Initializes the Next Gen GMA SDK. Safe to call more than once (e.g. early for returning users
+     * who already consented AND again after the consent refresh) — only the first call initializes,
+     * and every [onComplete] is delivered once initialization finishes.
      */
     fun initialize(onComplete: () -> Unit = {}) {
         if (_isInitialized.value) {
             onComplete()
             return
         }
+        pendingInitCallbacks.add(onComplete)
+        // Initialization may have completed between the check above and the enqueue.
+        if (_isInitialized.value) {
+            drainInitCallbacks()
+            return
+        }
+        if (!initStarted.compareAndSet(false, true)) return
 
         // The Next Gen SDK must be initialized (and ads loaded) off the main thread.
-        CoroutineScope(Dispatchers.IO).launch {
+        scope.launch {
             try {
                 MobileAds.initialize(
                     context,
-                    InitializationConfig.Builder(APP_ID).build()
+                    InitializationConfig.Builder(appId).build()
                 ) {
                     Log.i(TAG, "Next Gen GMA SDK initialized.")
                     _isInitialized.value = true
                     preloadAllWhenReady()
-                    onComplete()
+                    drainInitCallbacks()
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "Error initializing Next Gen GMA SDK: ${e.message}")
                 _isInitialized.value = false
-                onComplete()
+                initStarted.set(false)
+                drainInitCallbacks()
             }
+        }
+    }
+
+    private fun drainInitCallbacks() {
+        while (true) {
+            val callback = pendingInitCallbacks.poll() ?: return
+            callback()
+        }
+    }
+
+    /**
+     * The AdMob App ID from the manifest meta-data (set via manifestPlaceholders["admobAppId"]).
+     * Same value UMP uses, so consent and ads can never disagree on the app.
+     */
+    val appId: String by lazy {
+        val fromManifest = try {
+            context.packageManager
+                .getApplicationInfo(context.packageName, PackageManager.GET_META_DATA)
+                .metaData?.getString(APP_ID_META_DATA)
+        } catch (e: Exception) {
+            null
+        }
+        if (fromManifest.isNullOrBlank()) {
+            Log.w(TAG, "No $APP_ID_META_DATA meta-data found; falling back to the sample App ID.")
+            APP_ID
+        } else {
+            fromManifest
         }
     }
 
@@ -111,7 +195,47 @@ class AdsManager(
         return networkMonitor.isOnline.first()
     }
 
+    /**
+     * The shared native ad pool for [adUnitId]. Every native composable using the same unit draws
+     * from (and refills) this one pool, so a loaded native ad is never thrown away unseen.
+     */
+    fun nativeAds(adUnitId: String = AdUnitIds.NATIVE): NativeAdManager =
+        nativeAdManagers.computeIfAbsent(adUnitId) { NativeAdManager(this, it) }
+
+    /**
+     * Registers a listener for every [AdEvent] (requests, loads, failures, impressions, clicks,
+     * revenue…) across all formats — e.g. to forward to analytics, or use [AdStats] to compute match
+     * rate and show rate. May be called on any thread.
+     */
+    fun addEventListener(listener: AdEventListener) {
+        eventListeners.addIfAbsent(listener)
+    }
+
+    fun removeEventListener(listener: AdEventListener) {
+        eventListeners.remove(listener)
+    }
+
+    internal fun emit(event: AdEvent) {
+        for (listener in eventListeners) {
+            try {
+                listener.onAdEvent(event)
+            } catch (e: Exception) {
+                Log.e(TAG, "AdEventListener threw on $event", e)
+            }
+        }
+    }
+
+    /**
+     * Suppresses the App Open ad on the NEXT return to foreground. Called automatically when a
+     * banner/native ad is clicked; call it yourself before sending the user out of the app on purpose
+     * (share sheet, in-app purchase, system settings, a permission screen…).
+     */
+    fun skipNextAppOpen() = skipNextAppOpen.set(true)
+
+    internal fun consumeAppOpenSkip(): Boolean = skipNextAppOpen.getAndSet(false)
+
     // Forward preloads to specific lazy-initialized manager hooks
+    @Volatile
     private var preloaderCallback: (() -> Unit)? = null
 
     fun setPreloaderCallback(callback: () -> Unit) {

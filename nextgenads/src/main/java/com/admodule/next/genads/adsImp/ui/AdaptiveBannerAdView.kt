@@ -11,10 +11,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.google.android.libraries.ads.mobile.sdk.banner.AdSize
 import com.google.android.libraries.ads.mobile.sdk.banner.AdView
-import com.google.android.libraries.ads.mobile.sdk.banner.BannerAd
-import com.google.android.libraries.ads.mobile.sdk.common.AdLoadCallback
-import com.google.android.libraries.ads.mobile.sdk.common.LoadAdError
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.admodule.next.genads.adsImp.AdUnitIds
 import com.admodule.next.genads.adsImp.manager.AdsManager
 
@@ -27,9 +23,9 @@ fun AdaptiveBannerAdView(
     adUnitId: String = AdUnitIds.BANNER,
     isEnabled: Boolean = true
 ) {
-    // Gate: show nothing unless this unit is enabled (remote-config style flag) AND online.
-    val isOnline by adsManager.networkMonitor.isOnline.collectAsStateWithLifecycle(initialValue = true)
-    if (!isEnabled || !isOnline) return
+    // Gate: show nothing unless this unit is enabled (remote-config style flag). Being offline only
+    // blocks the FIRST request; a banner already on screen survives a brief network drop.
+    if (!isEnabled || !rememberCanShowInlineAd(adsManager)) return
 
     val context = LocalContext.current
 
@@ -63,18 +59,17 @@ fun AdaptiveBannerAdView(
                 modifier = Modifier.fillMaxWidth(),
                 factory = { ctx ->
                     AdView(ctx).apply {
-                        loadAd(
-                            adsManager.buildBannerAdRequest(adUnitId, adaptiveAdSize),
-                            object : AdLoadCallback<BannerAd> {
-                                override fun onAdLoaded(ad: BannerAd) {
-                                    isLoaded = true
-                                    Log.d(TAG, "Adaptive Banner Loaded successfully. Size: $adaptiveAdSize")
-                                }
-
-                                override fun onAdFailedToLoad(adError: LoadAdError) {
-                                    hasError = true
-                                    Log.e(TAG, "Adaptive Banner failed to load: ${adError.message}")
-                                }
+                        loadTrackedBanner(
+                            adsManager = adsManager,
+                            request = adsManager.buildBannerAdRequest(adUnitId, adaptiveAdSize),
+                            adUnitId = adUnitId,
+                            onLoaded = {
+                                isLoaded = true
+                                Log.d(TAG, "Adaptive Banner Loaded successfully. Size: $adaptiveAdSize")
+                            },
+                            onFailed = { adError ->
+                                hasError = true
+                                Log.e(TAG, "Adaptive Banner failed to load: ${adError.message}")
                             }
                         )
                     }

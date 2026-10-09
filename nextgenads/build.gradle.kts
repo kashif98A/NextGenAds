@@ -29,6 +29,11 @@ android {
     compose = true
   }
 
+  // android.util.Log etc. return defaults in JVM unit tests instead of throwing "not mocked".
+  testOptions {
+    unitTests.isReturnDefaultValues = true
+  }
+
   // Expose a single "release" variant for publishing (JitPack / Maven).
   publishing {
     singleVariant("release") {
@@ -53,6 +58,9 @@ dependencies {
   implementation(libs.kotlinx.coroutines.android)
   implementation(libs.kotlinx.coroutines.core)
   debugImplementation(libs.androidx.compose.ui.tooling)
+
+  testImplementation(libs.junit)
+  testImplementation(libs.kotlinx.coroutines.test)
 }
 
 // JitPack picks up this publication when building the tagged release.
@@ -63,7 +71,7 @@ afterEvaluate {
         from(components["release"])
         groupId = "com.github.kashif98A"
         artifactId = "nextgenads"
-        version = "1.0.0"
+        version = "1.1.0"
       }
     }
   }

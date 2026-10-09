@@ -1,213 +1,43 @@
 ===============================================================================
- ADS MODULE — INTEGRATION GUIDE
- How to reuse the `com/example/ads` folder in another project and call it.
+ NEXTGENADS — INTEGRATION GUIDE
 ===============================================================================
 
-The `ads/` folder is SELF-CONTAINED in code (it has zero references into the
-rest of the host app). You can drop it into another project. It is a PACKAGE,
-not a Gradle module, and it has NO built-in dependency injection — so "calling
-it properly" = 4 steps: add dependencies, add permissions, wire it once, call it.
+The full, up-to-date integration guide is in README.md:
 
-Built on the Next-Gen Google Mobile Ads SDK:
-  com.google.android.libraries.ads.mobile.sdk:ads-mobile-sdk:1.2.0
+  Installation ............ README.md → "Installation"   (JitPack + App ID)
+  Quick start ............. README.md → "Quick start (3 steps)"
+  GDPR consent form ....... README.md → "GDPR consent form (UMP)"
+  Every ad format ......... README.md → "Calling each ad format"
+  Your own ad unit IDs .... README.md → "Using your own ad unit IDs"
+  Release checklist ....... README.md → "Release checklist"
 
+This file previously described copying the old `ads/` source folder into a
+project (SDK 1.2.0, initializing ads with no consent step). That approach is
+obsolete: use the :nextgenads library (v1.1.0) from JitPack, and always gather
+consent before initializing ads. The old text remains in git history.
 
--------------------------------------------------------------------------------
- WHAT'S IN THE FOLDER
--------------------------------------------------------------------------------
-ads/
-  AdUnitIds.kt ................ all ad unit IDs (single source of truth)
-  data/
-    NetworkMonitor.kt ........ online/offline Flow (interface + LiveNetworkMonitor)
-  manager/
-    AdsManager.kt ............ SDK init + request builders + network check (core)
-    AppOpenManager.kt ........ app-open ad
-    InterstitialManager.kt ... interstitial ad
-    RewardedManager.kt ....... rewarded ad
-    RewardedInterstitialManager.kt .. rewarded interstitial ad
-  ui/                          (Compose — needed only for banner/native)
-    BannerAdView.kt .......... standard banner composable
-    AdaptiveBannerAdView.kt .. adaptive anchored banner composable
-    CollapsibleBannerAdView.kt  collapsible banner composable
-    NativeSmallAdView.kt ..... small native ad composable
-    NativeMediumAdView.kt .... medium native ad composable
+Minimum integration, for reference:
 
+  1. app/build.gradle.kts
+       implementation("com.github.kashif98A:nextgenads:1.1.0")
+       android { defaultConfig {
+           manifestPlaceholders["admobAppId"] = "ca-app-pub-XXXX~YYYY"   // REQUIRED
+       } }
 
--------------------------------------------------------------------------------
- STEP 1 — COPY THE FOLDER
--------------------------------------------------------------------------------
-Copy:  app/src/main/java/com/example/ads/   into the new project.
+  2. Application.onCreate()
+       adsManager     = AdsManager(this, LiveNetworkMonitor(this))
+       consentManager = ConsentManager(this)
+       appOpenManager = AppOpenManager(adsManager)        // + other managers
+       adsManager.setPreloaderCallback { appOpenManager.loadAd() /* … */ }
+       // do NOT initialize ads here
 
-Package names: a Kotlin package does NOT have to match your applicationId, so
-you may keep `package com.admodule.next.genads.ads...` as-is, OR do a global rename to
-`yourpkg.ads.*`. Either one compiles.
+  3. First Activity.onCreate()
+       if (consentManager.canRequestAds) adsManager.initialize()
+       consentManager.gatherConsent(this) {
+           if (consentManager.canRequestAds) adsManager.initialize()
+       }
 
-
--------------------------------------------------------------------------------
- STEP 2 — ADD GRADLE DEPENDENCIES   (new module's build.gradle.kts)
--------------------------------------------------------------------------------
-// Next-Gen GMA SDK (also provides AdMobAdapter transitively, used by collapsible banner)
-implementation("com.google.android.libraries.ads.mobile.sdk:ads-mobile-sdk:1.2.0")
-
-// Coroutines
-implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.2")
-
-// AppOpenManager uses ProcessLifecycleOwner
-implementation("androidx.lifecycle:lifecycle-process:2.8.7")
-
-// Compose — ONLY required if you use the ui/ banner & native composables
-implementation(platform("androidx.compose:compose-bom:2024.09.00"))
-implementation("androidx.compose.ui:ui")
-implementation("androidx.compose.material3:material3")
-implementation("androidx.compose.foundation:foundation")
-
-// In the android { } block:
-buildFeatures { compose = true }     // only if using the ui/ composables
-defaultConfig { minSdk = 24 }        // 23 minimum
-
-
--------------------------------------------------------------------------------
- STEP 3 — ADD MANIFEST PERMISSIONS   (AndroidManifest.xml)
--------------------------------------------------------------------------------
-<uses-permission android:name="android.permission.INTERNET" />
-<uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
-
-NOTE: No <meta-data> App ID tag is required. This build passes the App ID
-      PROGRAMMATICALLY (see AdsManager.APP_ID in Step 4).
-
-
--------------------------------------------------------------------------------
- STEP 4 — PUT IN YOUR REAL IDs
--------------------------------------------------------------------------------
-1. ads/AdUnitIds.kt
-   Replace the AdMob TEST ad unit IDs with your PRODUCTION ad unit IDs.
-
-   object AdUnitIds {
-       const val APP_OPEN              = "ca-app-pub-XXXX/XXXX"
-       const val BANNER               = "ca-app-pub-XXXX/XXXX"
-       const val COLLAPSIBLE_BANNER   = "ca-app-pub-XXXX/XXXX"
-       const val NATIVE               = "ca-app-pub-XXXX/XXXX"
-       const val INTERSTITIAL         = "ca-app-pub-XXXX/XXXX"
-       const val REWARDED             = "ca-app-pub-XXXX/XXXX"
-       const val REWARDED_INTERSTITIAL= "ca-app-pub-XXXX/XXXX"
-   }
-
-2. ads/manager/AdsManager.kt
-   companion object { const val APP_ID = "ca-app-pub-XXXX~XXXX" }   // your real App ID
-
-
--------------------------------------------------------------------------------
- STEP 5 — WIRE IT ONCE (the missing DI)  — in your Application class
--------------------------------------------------------------------------------
-class App : Application() {
-
-    lateinit var adsManager: AdsManager;                       private set
-    lateinit var interstitialManager: InterstitialManager;     private set
-    lateinit var rewardedManager: RewardedManager;             private set
-    lateinit var rewardedInterstitialManager: RewardedInterstitialManager; private set
-    lateinit var appOpenManager: AppOpenManager;               private set
-
-    override fun onCreate() {
-        super.onCreate()
-
-        val monitor = LiveNetworkMonitor(this)
-        adsManager = AdsManager(this, monitor)
-
-        interstitialManager          = InterstitialManager(adsManager)
-        rewardedManager              = RewardedManager(adsManager)
-        rewardedInterstitialManager  = RewardedInterstitialManager(adsManager)
-        appOpenManager               = AppOpenManager(adsManager)
-
-        // Preload all full-screen ads as soon as the SDK is ready
-        adsManager.setPreloaderCallback {
-            interstitialManager.loadAd()
-            rewardedManager.loadAd()
-            rewardedInterstitialManager.loadAd()
-            appOpenManager.loadAd()
-        }
-
-        adsManager.initialize { /* SDK initialized */ }
-    }
-}
-
-Register it in AndroidManifest.xml:
-    <application android:name=".App" ... >
-
-
--------------------------------------------------------------------------------
- STEP 6 — CALL IT
--------------------------------------------------------------------------------
-Reach the managers from your Application instance, e.g.:
-    val app = applicationContext as App
-    val adsManager = app.adsManager
-
---- BANNER / NATIVE  (Jetpack Compose) -----------------------------------------
-Just drop the composable into your UI, passing adsManager:
-
-    BannerAdView(adsManager)
-    AdaptiveBannerAdView(adsManager)
-    CollapsibleBannerAdView(adsManager, direction = "bottom")  // or "top"
-    NativeSmallAdView(adsManager)
-    NativeMediumAdView(adsManager)
-
-Each handles its own load, shimmer placeholder, and view cleanup.
-
---- INTERSTITIAL  (from an Activity) -------------------------------------------
-    app.interstitialManager.showAd(activity) {
-        // called after the ad is dismissed (or if none was ready)
-    }
-
---- REWARDED -------------------------------------------------------------------
-    app.rewardedManager.showAd(activity,
-        onUserEarnedReward = { type, amount ->
-            // grant the reward
-        },
-        onDismiss = {
-            // ad closed
-        }
-    )
-
---- REWARDED INTERSTITIAL ------------------------------------------------------
-    app.rewardedInterstitialManager.showAd(activity,
-        onUserEarnedReward = { type, amount -> /* grant reward */ },
-        onDismiss = { }
-    )
-
---- APP OPEN -------------------------------------------------------------------
-    app.appOpenManager.showAd(activity) {
-        // dismissed
-    }
-
-The full-screen managers AUTO-PRELOAD the next ad on dismiss — no manual reload.
-
-
--------------------------------------------------------------------------------
- BEHAVIOR NOTES
--------------------------------------------------------------------------------
-- Ads simply LOAD and SHOW. There is no remote config, no analytics/tracking,
-  no frequency caps, and no cooldowns (these were intentionally removed).
-- Built-in: retry with exponential backoff, 4-hour cache expiry, network checks,
-  and auto-preload of the next full-screen ad after dismiss.
-- All SDK init / loads run off the main thread (Dispatchers.IO), as the Next-Gen
-  SDK requires.
-
-
--------------------------------------------------------------------------------
- TWO CAVEATS
--------------------------------------------------------------------------------
-1. The ui/ layer is COMPOSE-ONLY.
-   If the new project is XML/View-based, the banner & native COMPOSABLES won't
-   drop in directly (their internal logic still builds plain Android Views, so
-   you can lift that out). The 4 full-screen managers are pure Kotlin and work
-   in ANY project, Compose or not.
-
-2. App-open AUTO-SHOW is a stub.
-   AppOpenManager.onStart() calls showAdIfReady(), which is currently empty (it
-   has no Activity reference). App-open ads will LOAD but will not auto-DISPLAY
-   until you call appOpenManager.showAd(currentActivity) yourself from a
-   foreground Activity. For true auto-show, register an
-   ActivityLifecycleCallbacks to track the current activity and call showAd().
-
-===============================================================================
- END
-===============================================================================
+  4. Show ads
+       interstitialManager.showAd(activity) { /* next screen */ }
+       AdaptiveBannerAdView(adsManager)        // Compose
+       NativeMediumAdView(adsManager)          // Compose

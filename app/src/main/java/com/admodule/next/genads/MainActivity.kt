@@ -26,6 +26,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.admodule.next.genads.adsImp.manager.AdFormat
 import com.admodule.next.genads.adsImp.manager.AdsManager
 import com.admodule.next.genads.adsImp.manager.AppOpenManager
 import com.admodule.next.genads.adsImp.manager.ConsentManager
@@ -80,6 +81,12 @@ class MainActivity : ComponentActivity() {
                 // resolves and canRequestAds is true. This is the "call it from the main screen" hook;
                 // the identical call works from a dedicated splash Activity's onCreate().
                 LaunchedEffect(Unit) {
+                    // Returning user with a stored consent decision: start the SDK right away, in
+                    // parallel with the consent refresh, so the first ads aren't held up by the network.
+                    // initialize() is idempotent, so the second call below is harmless.
+                    if (consentManager.canRequestAds) {
+                        adsManager.initialize()
+                    }
                     consentManager.gatherConsent(this@MainActivity) { _ ->
                         privacyOptionsRequired = consentManager.isPrivacyOptionsRequired
                         if (consentManager.canRequestAds) {
@@ -212,6 +219,15 @@ class MainActivity : ComponentActivity() {
         val isInterstitialAvailable by interstitialManager.isAdLoaded.collectAsStateWithLifecycle()
         val isRewardedAvailable by rewardedManager.isAdLoaded.collectAsStateWithLifecycle()
         val isRewardedInterstitialAvailable by rewardedInterstitialManager.isAdLoaded.collectAsStateWithLifecycle()
+
+        // This screen offers rewarded ads, so warm them up now (and only now) — they are ready by the
+        // time the user taps, without caching them for sessions that never reach this screen.
+        LaunchedEffect(isInitialized) {
+            if (isInitialized) {
+                rewardedManager.loadAd()
+                rewardedInterstitialManager.loadAd()
+            }
+        }
 
         // PRELOAD strategy loader: relies on the cached interstitial (preloaded at app start / via the
         // Preload button). Shows instantly if cached, otherwise waits briefly for an in-flight preload.
@@ -410,6 +426,8 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
+            AdMetricsCard()
+
             // Section Headline: Full-Screen Ad Units Area (The Professional Polish card grid)
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -594,7 +612,7 @@ class MainActivity : ComponentActivity() {
                     modifier = Modifier.padding(12.dp),
                     verticalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
-                    TabRow(
+                    PrimaryTabRow(
                         selectedTabIndex = currentBannerTab,
                         containerColor = Color(0xFFF0F4FF),
                         contentColor = Color(0xFF005FB0),
@@ -734,6 +752,62 @@ class MainActivity : ComponentActivity() {
                     contentPadding = PaddingValues(horizontal = 24.dp, vertical = 12.dp)
                 ) {
                     Text("Back to Dashboard", fontWeight = FontWeight.Bold)
+                }
+            }
+        }
+    }
+
+    /** Live match rate (loaded ÷ requested) and show rate (impressions ÷ loaded) from [AdStats]. */
+    @Composable
+    fun AdMetricsCard() {
+        val stats = BaseApplication.instance.adStats
+        var tick by remember { mutableStateOf(0) }
+        LaunchedEffect(Unit) {
+            while (true) {
+                kotlinx.coroutines.delay(1_000)
+                tick++
+            }
+        }
+        // Re-read the counters every second.
+        val rows = remember(tick) { AdFormat.entries.map { it to stats.snapshot(it) } }
+        fun pct(rate: Double?) = rate?.let { "${(it * 100).toInt()}%" } ?: "—"
+
+        Card(
+            modifier = Modifier.fillMaxWidth().testTag("ad_metrics_card"),
+            shape = RoundedCornerShape(24.dp),
+            border = BorderStroke(1.dp, Color(0xFFE1E2EC)),
+            colors = CardDefaults.cardColors(containerColor = Color.White)
+        ) {
+            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text("Ad metrics (this session)", fontWeight = FontWeight.Bold, color = Color(0xFF1C1B1F))
+                Row(Modifier.fillMaxWidth()) {
+                    listOf("Format", "Req", "Loaded", "Shown", "Match", "Show").forEachIndexed { i, h ->
+                        Text(
+                            h, fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color(0xFF44474E),
+                            modifier = Modifier.weight(if (i == 0) 2.2f else 1f)
+                        )
+                    }
+                }
+                rows.forEach { (format, c) ->
+                    Row(Modifier.fillMaxWidth()) {
+                        val cells = listOf(
+                            when (format) {
+                                AdFormat.APP_OPEN -> "App open"
+                                AdFormat.INTERSTITIAL -> "Interstitial"
+                                AdFormat.REWARDED -> "Rewarded"
+                                AdFormat.REWARDED_INTERSTITIAL -> "Rewarded int."
+                                AdFormat.BANNER -> "Banner"
+                                AdFormat.NATIVE -> "Native"
+                            },
+                            "${c.requests}", "${c.loaded}", "${c.impressions}", pct(c.matchRate), pct(c.showRate)
+                        )
+                        cells.forEachIndexed { i, v ->
+                            Text(
+                                v, fontSize = 11.sp, color = Color(0xFF1C1B1F),
+                                modifier = Modifier.weight(if (i == 0) 2.2f else 1f)
+                            )
+                        }
+                    }
                 }
             }
         }
@@ -945,7 +1019,7 @@ class MainActivity : ComponentActivity() {
                 }
 
                 // Inner Tab switcher representing mock navigation
-                TabRow(
+                PrimaryTabRow(
                     selectedTabIndex = selectedTab,
                     containerColor = Color.White,
                     contentColor = Color(0xFF005FB0),

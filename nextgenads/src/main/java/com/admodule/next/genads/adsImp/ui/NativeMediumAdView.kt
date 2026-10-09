@@ -3,7 +3,6 @@ package com.admodule.next.genads.adsImp.ui
 import android.content.Context
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
-import android.util.Log
 import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
@@ -20,20 +19,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
-import com.google.android.libraries.ads.mobile.sdk.common.LoadAdError
 import com.google.android.libraries.ads.mobile.sdk.nativead.MediaView
 import com.google.android.libraries.ads.mobile.sdk.nativead.NativeAd
-import com.google.android.libraries.ads.mobile.sdk.nativead.NativeAdLoader
-import com.google.android.libraries.ads.mobile.sdk.nativead.NativeAdLoaderCallback
-import com.google.android.libraries.ads.mobile.sdk.nativead.NativeAdRequest
 import com.google.android.libraries.ads.mobile.sdk.nativead.NativeAdView
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.admodule.next.genads.adsImp.AdUnitIds
 import com.admodule.next.genads.adsImp.manager.AdsManager
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
-
-private const val TAG = "NativeMediumAdView"
 
 @Composable
 fun NativeMediumAdView(
@@ -42,9 +32,9 @@ fun NativeMediumAdView(
     adUnitId: String = AdUnitIds.NATIVE,
     isEnabled: Boolean = true
 ) {
-    // Gate: show nothing unless this unit is enabled (remote-config style flag) AND online.
-    val isOnline by adsManager.networkMonitor.isOnline.collectAsStateWithLifecycle(initialValue = true)
-    if (!isEnabled || !isOnline) return
+    // Gate: show nothing unless this unit is enabled (remote-config style flag). Being offline only
+    // blocks the FIRST request; an ad already on screen survives a brief network drop.
+    if (!isEnabled || !rememberCanShowInlineAd(adsManager)) return
 
     val primaryColor = MaterialTheme.colorScheme.primary.toArgb()
     val onPrimaryColor = MaterialTheme.colorScheme.onPrimary.toArgb()
@@ -52,44 +42,9 @@ fun NativeMediumAdView(
     val onSurfaceColor = MaterialTheme.colorScheme.onSurfaceVariant.toArgb()
     val textColor = MaterialTheme.colorScheme.onSurface.toArgb()
 
-    var nativeAdState by remember { mutableStateOf<NativeAd?>(null) }
-    var isLoadingAd by remember { mutableStateOf(true) }
-    var hasError by remember { mutableStateOf(false) }
-
-    LaunchedEffect(adUnitId) {
-        isLoadingAd = true
-        hasError = false
-        try {
-            val adRequest = NativeAdRequest.Builder(
-                adUnitId,
-                listOf(NativeAd.NativeAdType.NATIVE)
-            ).build()
-
-            // The Next Gen SDK requires ads to be loaded off the main thread.
-            withContext(Dispatchers.IO) {
-                NativeAdLoader.load(
-                    adRequest,
-                    object : NativeAdLoaderCallback {
-                        override fun onNativeAdLoaded(nativeAd: NativeAd) {
-                            nativeAdState = nativeAd
-                            isLoadingAd = false
-                            Log.d(TAG, "Native Medium Ad Loaded successfully.")
-                        }
-
-                        override fun onAdFailedToLoad(adError: LoadAdError) {
-                            isLoadingAd = false
-                            hasError = true
-                            Log.e(TAG, "Native Medium Ad failed to load: ${adError.message}")
-                        }
-                    }
-                )
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Critical error creating NativeAdLoader for Medium size: ${e.message}")
-            isLoadingAd = false
-            hasError = true
-        }
-    }
+    // Drawn from the shared pool: instant when an ad is cached, and never wasted if this view leaves
+    // the screen before the load finishes. The ad is destroyed when this slot leaves composition.
+    val slot = rememberNativeAdSlot(adsManager, adUnitId)
 
     Box(
         modifier = modifier
@@ -97,22 +52,19 @@ fun NativeMediumAdView(
             .wrapContentHeight(),
         contentAlignment = Alignment.Center
     ) {
-        if (isLoadingAd) {
-            NativeAdPlaceholder(
+        when (slot) {
+            NativeAdSlot.Loading -> NativeAdPlaceholder(
                 modifier = Modifier.fillMaxWidth(),
                 isMedium = true
             )
-        } else if (!hasError && nativeAdState != null) {
-            val loadedAd = nativeAdState!!
-
-            AndroidView(
+            is NativeAdSlot.Ready -> AndroidView(
                 modifier = Modifier
                     .fillMaxWidth()
                     .wrapContentHeight(),
                 factory = { ctx ->
                     createDynamicMediumNativeView(
                         ctx,
-                        loadedAd,
+                        slot.ad,
                         primaryColor,
                         onPrimaryColor,
                         surfaceColor,
@@ -120,14 +72,9 @@ fun NativeMediumAdView(
                         textColor
                     )
                 },
-                update = {},
-                onRelease = {
-                    Log.d(TAG, "Releasing Medium NativeAd assets.")
-                    nativeAdState?.destroy()
-                }
+                update = {}
             )
-        } else {
-            Spacer(modifier = Modifier.height(0.dp))
+            NativeAdSlot.Empty -> Unit
         }
     }
 }

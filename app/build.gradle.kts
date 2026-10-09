@@ -13,6 +13,10 @@ android {
     targetSdk = 37
     versionCode = 1
     versionName = "1.0"
+    testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    // AdMob App ID (merged into the manifest by :nextgenads; required by UMP consent + read by
+    // AdsManager). This is Google's sample ID — replace it with your production App ID.
+    manifestPlaceholders["admobAppId"] = "ca-app-pub-3940256099942544~3347511713"
   }
 
   signingConfigs {
@@ -39,7 +43,12 @@ android {
       signingConfig = signingConfigs.getByName("release")
     }
     debug {
-      signingConfig = signingConfigs.getByName("debugConfig")
+      // debug.keystore is git-ignored, so a fresh clone won't have it. Use it when present (keeps a
+      // stable debug signature across machines); otherwise fall back to AGP's default debug signing
+      // (~/.android/debug.keystore) instead of failing the build.
+      if (file("${rootDir}/debug.keystore").exists()) {
+        signingConfig = signingConfigs.getByName("debugConfig")
+      }
     }
   }
   compileOptions {
@@ -72,4 +81,11 @@ dependencies {
   implementation(libs.kotlinx.coroutines.android)
   implementation(libs.kotlinx.coroutines.core)
   debugImplementation(libs.androidx.compose.ui.tooling)
+
+  // On-device tests against the real Next-Gen SDK + UMP (see app/src/androidTest).
+  androidTestImplementation(libs.junit)
+  androidTestImplementation(libs.androidx.test.runner)
+  androidTestImplementation(libs.androidx.test.rules)
+  androidTestImplementation(libs.androidx.test.ext.junit)
+  androidTestImplementation(libs.androidx.test.uiautomator)
 }

@@ -11,10 +11,6 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import com.google.android.libraries.ads.mobile.sdk.banner.AdSize
 import com.google.android.libraries.ads.mobile.sdk.banner.AdView
-import com.google.android.libraries.ads.mobile.sdk.banner.BannerAd
-import com.google.android.libraries.ads.mobile.sdk.common.AdLoadCallback
-import com.google.android.libraries.ads.mobile.sdk.common.LoadAdError
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.admodule.next.genads.adsImp.AdUnitIds
 import com.admodule.next.genads.adsImp.manager.AdsManager
 
@@ -28,9 +24,9 @@ fun CollapsibleBannerAdView(
     adUnitId: String = AdUnitIds.COLLAPSIBLE_BANNER,
     isEnabled: Boolean = true
 ) {
-    // Gate: show nothing unless this unit is enabled (remote-config style flag) AND online.
-    val isOnline by adsManager.networkMonitor.isOnline.collectAsStateWithLifecycle(initialValue = true)
-    if (!isEnabled || !isOnline) return
+    // Gate: show nothing unless this unit is enabled (remote-config style flag). Being offline only
+    // blocks the FIRST request; a banner already on screen survives a brief network drop.
+    if (!isEnabled || !rememberCanShowInlineAd(adsManager)) return
 
     val context = LocalContext.current
 
@@ -65,23 +61,22 @@ fun CollapsibleBannerAdView(
                 factory = { ctx ->
                     AdView(ctx).apply {
                         // Load using collapsible banner request params built via AdsManager
-                        loadAd(
-                            adsManager.buildBannerAdRequest(
+                        loadTrackedBanner(
+                            adsManager = adsManager,
+                            request = adsManager.buildBannerAdRequest(
                                 adUnitId,
                                 adSize,
                                 isCollapsible = true,
                                 collapsibleDirection = direction
                             ),
-                            object : AdLoadCallback<BannerAd> {
-                                override fun onAdLoaded(ad: BannerAd) {
-                                    isLoaded = true
-                                    Log.d(TAG, "Collapsible Banner Loaded successfully.")
-                                }
-
-                                override fun onAdFailedToLoad(adError: LoadAdError) {
-                                    hasError = true
-                                    Log.e(TAG, "Collapsible Banner failed to load: ${adError.message}")
-                                }
+                            adUnitId = adUnitId,
+                            onLoaded = {
+                                isLoaded = true
+                                Log.d(TAG, "Collapsible Banner Loaded successfully.")
+                            },
+                            onFailed = { adError ->
+                                hasError = true
+                                Log.e(TAG, "Collapsible Banner failed to load: ${adError.message}")
                             }
                         )
                     }

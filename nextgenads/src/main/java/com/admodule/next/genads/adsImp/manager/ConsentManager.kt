@@ -2,6 +2,8 @@ package com.admodule.next.genads.adsImp.manager
 
 import android.app.Activity
 import android.content.Context
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import com.google.android.ump.ConsentDebugSettings
 import com.google.android.ump.ConsentInformation
@@ -13,6 +15,8 @@ import com.google.android.ump.UserMessagingPlatform
  * GDPR / IAB-TCF consent handling via Google's User Messaging Platform (UMP).
  *
  * Recommended flow (per Google's docs):
+ *   0. If [canRequestAds] is ALREADY true (a returning user's stored decision), initialize the Ads SDK
+ *      immediately, in parallel with step 1 — don't make every launch wait on the network.
  *   1. [gatherConsent] → requestConsentInfoUpdate — refreshes the latest consent state from the UMP
  *      backend for this app + user.
  *   2. loadAndShowConsentFormIfRequired — shows the consent form ONLY when UMP says it is required
@@ -30,8 +34,21 @@ class ConsentManager(context: Context) {
 
     private val TAG = "ConsentManager"
 
+    private val mainHandler = Handler(Looper.getMainLooper())
+
     private val consentInformation: ConsentInformation =
         UserMessagingPlatform.getConsentInformation(context)
+
+    /**
+     * QA ONLY — forces the EEA (GDPR) consent experience on the listed test devices so the form can be
+     * verified from outside the EEA. Use the hashed device id UMP prints to Logcat on the first run
+     * ("Use new ConsentDebugSettings.Builder().addTestDeviceHashedId(...)"). Emulators need no id.
+     * Leave empty (the default) in release builds — UMP ignores debug settings on non-test devices.
+     */
+    var eeaDebugTestDeviceIds: List<String> = emptyList()
+
+    /** QA ONLY — force the EEA experience on emulators / listed devices even with no ids given. */
+    var forceEeaDebugGeography: Boolean = false
 
     /** True once UMP has enough consent to request ads (consent given, or consent not required). */
     val canRequestAds: Boolean
@@ -54,12 +71,22 @@ class ConsentManager(context: Context) {
      * resolves with no form shown and [canRequestAds] == true.
      */
     fun gatherConsent(activity: Activity, onConsentResolved: (error: FormError?) -> Unit) {
+        requestConsentUpdate(activity, attempt = 0, onConsentResolved)
+    }
+
+    private fun requestConsentUpdate(
+        activity: Activity,
+        attempt: Int,
+        onConsentResolved: (error: FormError?) -> Unit
+    ) {
         val params = ConsentRequestParameters.Builder()
             // Set true only for apps directed at children / users under the age of consent.
             .setTagForUnderAgeOfConsent(false)
-            // To TEST the EEA form from a non-EEA device, uncomment and supply your device's hashed id
-            // (printed to Logcat by UMP on the first run):
-            // .setConsentDebugSettings(debugSettings(activity))
+            .apply {
+                if (forceEeaDebugGeography || eeaDebugTestDeviceIds.isNotEmpty()) {
+                    setConsentDebugSettings(debugSettings(activity))
+                }
+            }
             .build()
 
         consentInformation.requestConsentInfoUpdate(
@@ -78,12 +105,31 @@ class ConsentManager(context: Context) {
             },
             { requestError ->
                 Log.w(TAG, "Consent info update failed: ${requestError.message} (${requestError.errorCode})")
-                // Still call back; the caller falls back to canRequestAds (which may already be true
-                // from a previously stored consent decision).
-                onConsentResolved(requestError)
+                // A NEW user with no stored decision can't get ads until this succeeds, so retry a few
+                // times (e.g. a flaky first-launch network) instead of leaving ads off all session.
+                // Users with a stored decision resolve right away — canRequestAds is already true.
+                // Configuration errors (e.g. a missing App ID) can't be fixed by retrying.
+                val isTransient = requestError.errorCode in TRANSIENT_ERROR_CODES
+                if (isTransient && !canRequestAds && attempt < MAX_CONSENT_RETRIES && activity.isAlive()) {
+                    val delayMs = CONSENT_RETRY_BASE_MS shl attempt
+                    Log.d(TAG, "Retrying consent info update in $delayMs ms (retry #${attempt + 1})")
+                    mainHandler.postDelayed({
+                        if (activity.isAlive()) {
+                            requestConsentUpdate(activity, attempt + 1, onConsentResolved)
+                        } else {
+                            onConsentResolved(requestError)
+                        }
+                    }, delayMs)
+                } else {
+                    // The caller falls back to canRequestAds (which may already be true from a
+                    // previously stored consent decision).
+                    onConsentResolved(requestError)
+                }
             }
         )
     }
+
+    private fun Activity.isAlive(): Boolean = !isFinishing && !isDestroyed
 
     /**
      * Re-opens the consent form so the user can change their choices. Wire this to a "Privacy options"
@@ -103,15 +149,20 @@ class ConsentManager(context: Context) {
         consentInformation.reset()
     }
 
-    /**
-     * Forces the EEA experience on a specific test device. Referenced from [gatherConsent] (commented
-     * out) so it is available when you need to verify the form without shipping to an EEA region.
-     */
-    @Suppress("unused")
+    /** Forces the EEA experience on the configured test devices (see [eeaDebugTestDeviceIds]). */
     private fun debugSettings(activity: Activity): ConsentDebugSettings =
         ConsentDebugSettings.Builder(activity)
             .setDebugGeography(ConsentDebugSettings.DebugGeography.DEBUG_GEOGRAPHY_EEA)
-            // Replace with the hashed device id printed to Logcat on the first run.
-            .addTestDeviceHashedId("TEST-DEVICE-HASHED-ID")
+            .apply { eeaDebugTestDeviceIds.forEach { addTestDeviceHashedId(it) } }
             .build()
+
+    private companion object {
+        const val MAX_CONSENT_RETRIES = 3
+        const val CONSENT_RETRY_BASE_MS = 2000L
+        val TRANSIENT_ERROR_CODES = setOf(
+            FormError.ErrorCode.INTERNAL_ERROR,
+            FormError.ErrorCode.INTERNET_ERROR,
+            FormError.ErrorCode.TIME_OUT
+        )
+    }
 }

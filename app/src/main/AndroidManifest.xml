@@ -17,9 +17,9 @@
         android:theme="@style/Theme.MyApplication">
 
         <!--
-            Next Gen Google Mobile Ads SDK takes the App ID programmatically via
-            InitializationConfig.Builder(APP_ID) (see AdsManager.APP_ID); no ads
-            meta-data is required in the manifest.
+            The AdMob App ID meta-data is merged in from the :nextgenads library
+            manifest, filled from manifestPlaceholders["admobAppId"] in
+            app/build.gradle.kts. UMP requires it; AdsManager reads it too.
         -->
 
         <activity

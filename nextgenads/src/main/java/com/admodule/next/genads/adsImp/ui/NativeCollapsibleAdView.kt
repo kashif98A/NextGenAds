@@ -5,7 +5,6 @@ import android.graphics.Color
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.text.TextUtils
-import android.util.Log
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.View
@@ -21,20 +20,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
-import com.google.android.libraries.ads.mobile.sdk.common.LoadAdError
 import com.google.android.libraries.ads.mobile.sdk.nativead.MediaView
 import com.google.android.libraries.ads.mobile.sdk.nativead.NativeAd
-import com.google.android.libraries.ads.mobile.sdk.nativead.NativeAdLoader
-import com.google.android.libraries.ads.mobile.sdk.nativead.NativeAdLoaderCallback
-import com.google.android.libraries.ads.mobile.sdk.nativead.NativeAdRequest
 import com.google.android.libraries.ads.mobile.sdk.nativead.NativeAdView
 import com.admodule.next.genads.adsImp.AdUnitIds
 import com.admodule.next.genads.adsImp.manager.AdsManager
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
-
-private const val TAG = "NativeCollapsibleAdView"
 
 /**
  * A custom NATIVE ad template styled to look like a "collapsible banner" card: a large media
@@ -51,48 +41,13 @@ fun NativeCollapsibleAdView(
     adUnitId: String = AdUnitIds.NATIVE,
     isEnabled: Boolean = true
 ) {
-    // Gate: show nothing unless this unit is enabled (remote-config style flag) AND online.
-    val isOnline by adsManager.networkMonitor.isOnline.collectAsStateWithLifecycle(initialValue = true)
-    if (!isEnabled || !isOnline) return
+    // Gate: show nothing unless this unit is enabled (remote-config style flag). Being offline only
+    // blocks the FIRST request; an ad already on screen survives a brief network drop.
+    if (!isEnabled || !rememberCanShowInlineAd(adsManager)) return
 
-    var nativeAdState by remember { mutableStateOf<NativeAd?>(null) }
-    var isLoadingAd by remember { mutableStateOf(true) }
-    var hasError by remember { mutableStateOf(false) }
-
-    LaunchedEffect(adUnitId) {
-        isLoadingAd = true
-        hasError = false
-        try {
-            val adRequest = NativeAdRequest.Builder(
-                adUnitId,
-                listOf(NativeAd.NativeAdType.NATIVE)
-            ).build()
-
-            // The Next Gen SDK requires ads to be loaded off the main thread.
-            withContext(Dispatchers.IO) {
-                NativeAdLoader.load(
-                    adRequest,
-                    object : NativeAdLoaderCallback {
-                        override fun onNativeAdLoaded(nativeAd: NativeAd) {
-                            nativeAdState = nativeAd
-                            isLoadingAd = false
-                            Log.d(TAG, "Collapsible-style native ad loaded.")
-                        }
-
-                        override fun onAdFailedToLoad(adError: LoadAdError) {
-                            isLoadingAd = false
-                            hasError = true
-                            Log.e(TAG, "Collapsible-style native ad failed to load: ${adError.message}")
-                        }
-                    }
-                )
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Critical error creating NativeAdLoader: ${e.message}")
-            isLoadingAd = false
-            hasError = true
-        }
-    }
+    // Drawn from the shared pool: instant when an ad is cached, and never wasted if this view leaves
+    // the screen before the load finishes. The ad is destroyed when this slot leaves composition.
+    val slot = rememberNativeAdSlot(adsManager, adUnitId)
 
     Box(
         modifier = modifier
@@ -100,27 +55,19 @@ fun NativeCollapsibleAdView(
             .wrapContentHeight(),
         contentAlignment = Alignment.Center
     ) {
-        if (isLoadingAd) {
-            NativeAdPlaceholder(
+        when (slot) {
+            NativeAdSlot.Loading -> NativeAdPlaceholder(
                 modifier = Modifier.fillMaxWidth(),
                 isMedium = true
             )
-        } else if (!hasError && nativeAdState != null) {
-            val loadedAd = nativeAdState!!
-
-            AndroidView(
+            is NativeAdSlot.Ready -> AndroidView(
                 modifier = Modifier
                     .fillMaxWidth()
                     .wrapContentHeight(),
-                factory = { ctx -> createCollapsibleNativeView(ctx, loadedAd) },
-                update = {},
-                onRelease = {
-                    Log.d(TAG, "Releasing Collapsible NativeAd assets.")
-                    nativeAdState?.destroy()
-                }
+                factory = { ctx -> createCollapsibleNativeView(ctx, slot.ad) },
+                update = {}
             )
-        } else {
-            Spacer(modifier = Modifier.height(0.dp))
+            NativeAdSlot.Empty -> Unit
         }
     }
 }
@@ -155,8 +102,8 @@ private fun createCollapsibleNativeView(context: Context, nativeAd: NativeAd): N
         )
     }
 
-    // 0) Always-visible, tappable header BAR that toggles the media.
-    //    Kept OUTSIDE the media so it can never be hidden — neither by collapsing the media nor by
+    // 0) Always-visible, tappable header BAR that shrinks / expands the media.
+    //    Kept OUTSIDE the media so it can never be covered — neither by the media itself nor by
     //    the ad network's mandatory attribution overlay (e.g. "Ad served by Meta" / AdChoices),
     //    which is always drawn in the media's top-right corner. The whole bar is clickable (big hit
     //    target) and its label changes with state so the expand control is impossible to miss.
@@ -176,7 +123,7 @@ private fun createCollapsibleNativeView(context: Context, nativeAd: NativeAd): N
         ).apply { bottomMargin = 10.dpToPx(context) }
     }
     val headerLabel = TextView(context).apply {
-        text = "Sponsored — tap to hide"
+        text = "Sponsored — tap to shrink"
         setTextColor(Color.parseColor("#7C3AED"))
         setTextSize(TypedValue.COMPLEX_UNIT_SP, 13f)
         typeface = Typeface.DEFAULT_BOLD
@@ -202,6 +149,12 @@ private fun createCollapsibleNativeView(context: Context, nativeAd: NativeAd): N
     root.addView(headerRow)
 
     // 1) Collapsible media area (no overlay controls — they live in the header above).
+    //    POLICY: a registered MediaView must never be hidden (GONE / 0px) — AdMob treats that as an
+    //    obscured ad asset and impressions may not count. "Collapsing" therefore shrinks the media to
+    //    AdMob's 120dp minimum MediaView size instead of hiding it; expanded, it follows the
+    //    creative's own aspect ratio so landscape images/videos aren't cropped.
+    val collapsedMediaHeight = MIN_MEDIA_VIEW_DP.dpToPx(context)
+    val expandedMediaHeight = expandedMediaHeightPx(context, nativeAd, collapsedMediaHeight)
     val mediaContainer = FrameLayout(context).apply {
         layoutParams = LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,
@@ -214,7 +167,7 @@ private fun createCollapsibleNativeView(context: Context, nativeAd: NativeAd): N
     val mediaView = MediaView(context).apply {
         layoutParams = FrameLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,
-            170.dpToPx(context)
+            expandedMediaHeight
         )
         clipToOutline = true
         background = GradientDrawable().apply {
@@ -225,17 +178,15 @@ private fun createCollapsibleNativeView(context: Context, nativeAd: NativeAd): N
     mediaContainer.addView(mediaView)
     root.addView(mediaContainer)
 
-    // Tapping anywhere on the header bar collapses/expands the whole media block (incl. its margin).
+    // Tapping anywhere on the header bar shrinks/expands the media (it always stays visible).
+    var isExpanded = true
     headerRow.setOnClickListener {
-        if (mediaContainer.visibility == View.VISIBLE) {
-            mediaContainer.visibility = View.GONE
-            chevron.rotation = 180f
-            headerLabel.text = "Sponsored — tap to show"
-        } else {
-            mediaContainer.visibility = View.VISIBLE
-            chevron.rotation = 0f
-            headerLabel.text = "Sponsored — tap to hide"
+        isExpanded = !isExpanded
+        mediaView.layoutParams = mediaView.layoutParams.apply {
+            height = if (isExpanded) expandedMediaHeight else collapsedMediaHeight
         }
+        chevron.rotation = if (isExpanded) 0f else 180f
+        headerLabel.text = if (isExpanded) "Sponsored — tap to shrink" else "Sponsored — tap to expand"
     }
 
     // 2) Icon + headline/body row, with an "Ad" badge on the right.
@@ -357,6 +308,21 @@ private fun createCollapsibleNativeView(context: Context, nativeAd: NativeAd): N
     nativeAdView.registerNativeAd(nativeAd, mediaView)
 
     return nativeAdView
+}
+
+/** AdMob native policy: a MediaView must be at least 120dp x 120dp whenever it is on screen. */
+private const val MIN_MEDIA_VIEW_DP = 120
+
+/**
+ * Height for the expanded media: the card's approximate content width divided by the creative's
+ * aspect ratio, kept between the policy minimum and a sensible maximum.
+ */
+private fun expandedMediaHeightPx(context: Context, nativeAd: NativeAd, minHeightPx: Int): Int {
+    val fallback = 170.dpToPx(context)
+    val aspectRatio = nativeAd.mediaContent.aspectRatio.takeIf { it > 0f } ?: return fallback
+    // Screen width minus the card padding + typical screen gutters.
+    val contentWidth = context.resources.displayMetrics.widthPixels - 56.dpToPx(context)
+    return (contentWidth / aspectRatio).toInt().coerceIn(minHeightPx, 260.dpToPx(context))
 }
 
 private fun Int.dpToPx(context: Context): Int {

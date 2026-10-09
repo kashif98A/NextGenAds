@@ -6,4 +6,15 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
+    <application>
+        <!-- AdMob App ID. REQUIRED by the UMP consent SDK: without it the consent request fails,
+             canRequestAds stays false and no ad is ever requested. AdsManager also reads it from
+             here, so this is the single place the App ID lives. Consuming apps must provide it:
+                 android { defaultConfig { manifestPlaceholders["admobAppId"] = "ca-app-pub-…~…" } }
+             The build fails with a missing-placeholder error if they don't. -->
+        <meta-data
+            android:name="com.google.android.gms.ads.APPLICATION_ID"
+            android:value="${admobAppId}" />
+    </application>
+
 </manifest>

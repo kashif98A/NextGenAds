@@ -3,6 +3,7 @@ package com.admodule.next.genads.adsImp.manager
 import android.app.Activity
 import android.util.Log
 import com.google.android.libraries.ads.mobile.sdk.common.AdLoadCallback
+import com.google.android.libraries.ads.mobile.sdk.common.AdValue
 import com.google.android.libraries.ads.mobile.sdk.common.FullScreenContentError
 import com.google.android.libraries.ads.mobile.sdk.common.LoadAdError
 import com.google.android.libraries.ads.mobile.sdk.interstitial.InterstitialAd
@@ -10,7 +11,6 @@ import com.google.android.libraries.ads.mobile.sdk.interstitial.InterstitialAdEv
 import com.admodule.next.genads.adsImp.AdUnitIds
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -23,15 +23,28 @@ class InterstitialManager(
 ) {
     private val TAG = "InterstitialManager"
 
+    /**
+     * How long a cached ad is considered fresh. Kept at 1 hour (not the 4 hours App Open allows):
+     * a stale cached ad is a matched request that will likely never turn into an impression.
+     */
+    var expiryMs: Long = 3600 * 1000L
+
+    @Volatile
     private var interstitialAd: InterstitialAd? = null
-    private var isLoading = false
+    @Volatile
     private var loadTime: Long = 0
+
+    private val loader = AdLoadController(adsManager, TAG)
+
+    @Volatile
+    private var requestStartedAt: Long = 0
+
+    /** Ad unit the cached ad was loaded from (events credit it, even if [adUnitId] changes later). */
+    @Volatile
+    private var loadedUnitId: String = adUnitId
 
     private val _isAdLoaded = MutableStateFlow(false)
     val isAdLoaded: StateFlow<Boolean> = _isAdLoaded.asStateFlow()
-
-    private var retryAttempt = 0
-    private val maxRetryDelayMs = 64000L
 
     /**
      * Verifies if an interstitial ad is loaded and unexpired.
@@ -44,6 +57,21 @@ class InterstitialManager(
      * Preloads the Interstitial ad if not already loaded or currently loading.
      */
     fun loadAd() {
+        loader.resetRetries()
+        load()
+    }
+
+    /** Drops a cached ad that expired unseen and reports it (a lost impression). */
+    @Synchronized
+    private fun discardIfExpired() {
+        if (interstitialAd != null && System.currentTimeMillis() - loadTime > expiryMs) {
+            interstitialAd = null
+            _isAdLoaded.value = false
+            adsManager.emit(AdEvent.Expired(AdFormat.INTERSTITIAL, loadedUnitId))
+        }
+    }
+
+    private fun load() {
         if (!isEnabled) {
             Log.d(TAG, "Interstitial disabled (isEnabled=false); skipping load.")
             return
@@ -53,34 +81,41 @@ class InterstitialManager(
             Log.d(TAG, "Ads SDK not initialized yet; skipping Interstitial load until consent + init.")
             return
         }
-        if (isLoading || (interstitialAd != null && !isExpired())) return
+        discardIfExpired()
+        if ((interstitialAd != null && !isExpired()) || !loader.tryStart()) return
 
-        isLoading = true
         Log.d(TAG, "Triggering load for Interstitial Ad: $adUnitId")
 
         // The Next Gen SDK requires ads to be loaded off the main thread.
-        CoroutineScope(Dispatchers.IO).launch {
+        adsManager.scope.launch {
             if (!adsManager.isNetworkAvailable()) {
-                Log.d(TAG, "No network available. Canceling load and scheduling retry.")
-                handleLoadFailureQuietly()
+                Log.d(TAG, "No network available. Load resumes when the network returns.")
+                loader.onAborted()
                 return@launch
             }
 
+            val unit = adUnitId
+            requestStartedAt = System.currentTimeMillis()
+            adsManager.emit(AdEvent.LoadRequested(AdFormat.INTERSTITIAL, unit))
             InterstitialAd.load(
-                adsManager.buildAdRequest(adUnitId),
+                adsManager.buildAdRequest(unit),
                 object : AdLoadCallback<InterstitialAd> {
                     override fun onAdLoaded(ad: InterstitialAd) {
-                        isLoading = false
                         interstitialAd = ad
                         loadTime = System.currentTimeMillis()
                         _isAdLoaded.value = true
-                        retryAttempt = 0
+                        loader.onLoaded()
+                        loadedUnitId = unit
+                        adsManager.emit(AdEvent.Loaded(AdFormat.INTERSTITIAL, unit, System.currentTimeMillis() - requestStartedAt))
                         Log.i(TAG, "Interstitial Ad loaded successfully.")
                     }
 
                     override fun onAdFailedToLoad(adError: LoadAdError) {
-                        isLoading = false
-                        handleLoadFailure(adError)
+                        _isAdLoaded.value = false
+                        interstitialAd = null
+                        Log.e(TAG, "Interstitial Ad failed to load: ${adError.message} (code: ${adError.code})")
+                        val retryIn = loader.onFailed(adError.code) { load() }
+                        adsManager.emit(AdEvent.LoadFailed(AdFormat.INTERSTITIAL, unit, adError.code, adError.message, retryIn))
                     }
                 }
             )
@@ -88,31 +123,7 @@ class InterstitialManager(
     }
 
     private fun isExpired(): Boolean {
-        val fourHoursMs = 4 * 3600 * 1000
-        return System.currentTimeMillis() - loadTime > fourHoursMs
-    }
-
-    private fun handleLoadFailureQuietly() {
-        isLoading = false
-        _isAdLoaded.value = false
-        scheduleRetry()
-    }
-
-    private fun handleLoadFailure(loadAdError: LoadAdError) {
-        _isAdLoaded.value = false
-        interstitialAd = null
-        Log.e(TAG, "Interstitial Ad failed to load: ${loadAdError.message} (code: ${loadAdError.code})")
-        scheduleRetry()
-    }
-
-    private fun scheduleRetry() {
-        retryAttempt++
-        val delayMs = (Math.pow(2.0, retryAttempt.toDouble()).toLong() * 1000L).coerceAtMost(maxRetryDelayMs)
-        Log.d(TAG, "Scheduling Interstitial Ad reload in $delayMs ms (Attempt #$retryAttempt)")
-        CoroutineScope(Dispatchers.IO).launch {
-            delay(delayMs)
-            loadAd()
-        }
+        return System.currentTimeMillis() - loadTime > expiryMs
     }
 
     /**
@@ -124,6 +135,7 @@ class InterstitialManager(
             onDismiss()
             return
         }
+        discardIfExpired()
         if (!isAdAvailable()) {
             Log.d(TAG, "Cannot show Interstitial Ad. Reason: " +
                 if (interstitialAd == null) "Ad not loaded." else "Cached ad expired."
@@ -134,14 +146,22 @@ class InterstitialManager(
             return
         }
 
-        val ad = interstitialAd ?: return
+        val ad = interstitialAd ?: run {
+            onDismiss()
+            return
+        }
 
         ad.adEventCallback = object : InterstitialAdEventCallback {
+            override fun onAdImpression() = adsManager.emit(AdEvent.Impression(AdFormat.INTERSTITIAL, loadedUnitId))
+            override fun onAdClicked() = adsManager.emit(AdEvent.Clicked(AdFormat.INTERSTITIAL, loadedUnitId))
+            override fun onAdPaid(value: AdValue) = adsManager.emit(value.toPaid(AdFormat.INTERSTITIAL, loadedUnitId))
+
             override fun onAdDismissedFullScreenContent() {
                 Log.d(TAG, "Interstitial Ad dismissed.")
+                adsManager.emit(AdEvent.Dismissed(AdFormat.INTERSTITIAL, loadedUnitId))
                 interstitialAd = null
                 _isAdLoaded.value = false
-
+                adsManager.fullScreenAdShowing.set(false)
                 // Trigger auto-preload for the next interstitial session
                 loadAd()
                 // The Next Gen SDK delivers these callbacks on a background thread; the consumer's
@@ -151,9 +171,10 @@ class InterstitialManager(
 
             override fun onAdFailedToShowFullScreenContent(fullScreenContentError: FullScreenContentError) {
                 Log.e(TAG, "Interstitial Ad failed to show: ${fullScreenContentError.message}")
+                adsManager.emit(AdEvent.ShowFailed(AdFormat.INTERSTITIAL, loadedUnitId, fullScreenContentError.message))
                 interstitialAd = null
                 _isAdLoaded.value = false
-
+                adsManager.fullScreenAdShowing.set(false)
                 // Load replacement ad
                 loadAd()
                 CoroutineScope(Dispatchers.Main).launch { onDismiss() }
@@ -164,7 +185,14 @@ class InterstitialManager(
             }
         }
 
-        ad.show(activity)
+        adsManager.fullScreenAdShowing.set(true)
+        try {
+            ad.show(activity)
+        } catch (e: Exception) {
+            Log.e(TAG, "Interstitial show() threw: ${e.message}")
+            adsManager.fullScreenAdShowing.set(false)
+            onDismiss()
+        }
     }
 
     /**
@@ -198,19 +226,27 @@ class InterstitialManager(
         Log.d(TAG, "On-demand: loading a fresh Interstitial Ad: $adUnitId")
         onLoading(true)
 
-        CoroutineScope(Dispatchers.IO).launch {
+        adsManager.scope.launch {
             if (!adsManager.isNetworkAvailable()) {
                 Log.d(TAG, "On-demand: no network available; aborting.")
                 withMain { onLoading(false); onDismiss() }
                 return@launch
             }
 
+            val unit = adUnitId
+            val startedAt = System.currentTimeMillis()
+            adsManager.emit(AdEvent.LoadRequested(AdFormat.INTERSTITIAL, unit))
             InterstitialAd.load(
-                adsManager.buildAdRequest(adUnitId),
+                adsManager.buildAdRequest(unit),
                 object : AdLoadCallback<InterstitialAd> {
                     override fun onAdLoaded(ad: InterstitialAd) {
                         Log.i(TAG, "On-demand Interstitial loaded; showing over the loader.")
+                        adsManager.emit(AdEvent.Loaded(AdFormat.INTERSTITIAL, unit, System.currentTimeMillis() - startedAt))
                         ad.adEventCallback = object : InterstitialAdEventCallback {
+                            override fun onAdImpression() = adsManager.emit(AdEvent.Impression(AdFormat.INTERSTITIAL, unit))
+                            override fun onAdClicked() = adsManager.emit(AdEvent.Clicked(AdFormat.INTERSTITIAL, unit))
+                            override fun onAdPaid(value: AdValue) = adsManager.emit(value.toPaid(AdFormat.INTERSTITIAL, unit))
+
                             override fun onAdShowedFullScreenContent() {
                                 Log.d(TAG, "On-demand Interstitial shown successfully.")
                                 // The ad now covers the screen — dismiss the loader behind it. Doing it
@@ -221,22 +257,44 @@ class InterstitialManager(
 
                             override fun onAdDismissedFullScreenContent() {
                                 Log.d(TAG, "On-demand Interstitial dismissed.")
+                                adsManager.emit(AdEvent.Dismissed(AdFormat.INTERSTITIAL, unit))
+                                adsManager.fullScreenAdShowing.set(false)
                                 withMain { onLoading(false); onDismiss() }
                             }
 
                             override fun onAdFailedToShowFullScreenContent(fullScreenContentError: FullScreenContentError) {
                                 Log.e(TAG, "On-demand Interstitial failed to show: ${fullScreenContentError.message}")
+                                adsManager.emit(AdEvent.ShowFailed(AdFormat.INTERSTITIAL, unit, fullScreenContentError.message))
+                                adsManager.fullScreenAdShowing.set(false)
                                 withMain { onLoading(false); onDismiss() }
                             }
                         }
                         // Keep the loader up and show the ad ON TOP of it; the loader is dismissed in
                         // onAdShowedFullScreenContent. show() must run on the main thread (the load
                         // callback arrives on a worker).
-                        withMain { ad.show(activity) }
+                        withMain {
+                            if (activity.isFinishing || activity.isDestroyed) {
+                                Log.d(TAG, "On-demand: activity gone before the ad loaded; not showing.")
+                                onLoading(false)
+                                onDismiss()
+                                return@withMain
+                            }
+                            adsManager.fullScreenAdShowing.set(true)
+                            try {
+                                ad.show(activity)
+                            } catch (e: Exception) {
+                                Log.e(TAG, "On-demand show() threw: ${e.message}")
+                                adsManager.fullScreenAdShowing.set(false)
+                                onLoading(false)
+                                onDismiss()
+                            }
+                        }
                     }
 
                     override fun onAdFailedToLoad(adError: LoadAdError) {
                         Log.e(TAG, "On-demand Interstitial failed to load: ${adError.message} (code: ${adError.code})")
+                        // On-demand never auto-retries: the user is waiting on a loader.
+                        adsManager.emit(AdEvent.LoadFailed(AdFormat.INTERSTITIAL, unit, adError.code, adError.message, null))
                         withMain { onLoading(false); onDismiss() }
                     }
                 }
