@@ -3,7 +3,6 @@ plugins {
   alias(libs.plugins.kotlin.compose)
   `maven-publish`
 }
-
 android {
   namespace = "com.admodule.next.genads.adsImp"
   compileSdk { version = release(37) { minorApiLevel = 1 } }
