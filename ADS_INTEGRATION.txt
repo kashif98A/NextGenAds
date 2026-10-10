@@ -19,7 +19,7 @@ consent before initializing ads. The old text remains in git history.
 Minimum integration, for reference:
 
   1. app/build.gradle.kts
-       implementation("com.github.kashif98A:nextgenads:1.1.0")
+       implementation("com.github.kashif98A:NextGenAds:1.1.0")
        android { defaultConfig {
            manifestPlaceholders["admobAppId"] = "ca-app-pub-XXXX~YYYY"   // REQUIRED
        } }
@@ -31,7 +31,7 @@ Minimum integration, for reference:
        adsManager.setPreloaderCallback { appOpenManager.loadAd() /* … */ }
        // do NOT initialize ads here
 
-  3. First Activity.onCreate()
+  3. First Activity.onCreate()   — AFTER setContent { } / setContentView()
        if (consentManager.canRequestAds) adsManager.initialize()
        consentManager.gatherConsent(this) {
            if (consentManager.canRequestAds) adsManager.initialize()

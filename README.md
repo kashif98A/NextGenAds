@@ -92,7 +92,7 @@ dependencyResolutionManagement {
 ```kotlin
 // app/build.gradle.kts
 dependencies {
-    implementation("com.github.kashif98A:nextgenads:1.1.0") // the git tag (or a commit hash)
+    implementation("com.github.kashif98A:NextGenAds:1.1.0") // the git tag (or a commit hash)
 }
 ```
 
@@ -176,6 +176,8 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         val app = application as App
 
+        setContent { /* your UI */ }   // set the content FIRST (see the note below)
+
         // A returning user with a stored decision: start ads right away, while consent refreshes.
         if (app.consentManager.canRequestAds) app.adsManager.initialize()
 
@@ -185,11 +187,13 @@ class MainActivity : ComponentActivity() {
                 app.adsManager.initialize() // safe to call twice: only the first call does anything
             }
         }
-
-        setContent { /* your UI */ }
     }
 }
 ```
+
+> **Call `gatherConsent` after `setContent` (or `setContentView`).** UMP inspects the Activity's
+> window. If it runs before the window has content, the first request fails with `Window couldn't
+> find content container view`. The library retries and recovers, but only after an extra ~2 s.
 
 ### Step 3: Show ads
 
@@ -640,6 +644,7 @@ traffic.
 | --- | --- |
 | **No ads at all, ever** | Check Logcat for `ConsentManager: Consent info update failed … APPLICATION_ID`. The App ID is missing: set `manifestPlaceholders["admobAppId"]`. |
 | Build error: `requires a placeholder substitution … admobAppId` | Same fix: set the placeholder in your app's `defaultConfig`. |
+| Logcat: `Window couldn't find content container view` from UMP | `gatherConsent` ran before `setContent`. Call it after the Activity has content (the library retries, but it costs ~2 s). |
 | Ads load in the demo but not in your app | `adsManager.initialize()` is never called. It must run after `gatherConsent` with `canRequestAds == true`. |
 | Banner or native missing, or a crash when the screen opens | It was created before the SDK finished starting. Wrap inline ads in `if (isInitialized)` (see [Banners](#banners)). |
 | App Open shows over the splash screen | Add the splash to `appOpenManager.excludedActivities`. |
