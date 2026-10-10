@@ -169,6 +169,20 @@ class EeaConsentOnDeviceTest {
         return out
     }
 
+    /**
+     * Taps [text] and waits for [latch] (the form's result callback). The form's WebView can show its
+     * buttons before its click handlers are ready, so let it settle and re-tap if nothing happened.
+     */
+    private fun tapAndAwait(text: String, latch: CountDownLatch): Boolean {
+        SystemClock.sleep(1_000)
+        repeat(3) {
+            if (findNode(text) == null) return latch.await(15, TimeUnit.SECONDS) // form already closing
+            tap(text)
+            if (latch.await(6, TimeUnit.SECONDS)) return true
+        }
+        return latch.await(10, TimeUnit.SECONDS)
+    }
+
     /** Taps the centre of the button with a real touch, as a user would. */
     private fun tap(text: String) {
         val node = findNode(text)
@@ -187,8 +201,7 @@ class EeaConsentOnDeviceTest {
         assertTrue("form offers 'Do not consent'", hasButton("Do not consent"))
         assertTrue("form offers 'Manage options'", hasButton("Manage options"))
 
-        tap("Consent")
-        assertTrue("consent flow must resolve after answering", done.await(20, TimeUnit.SECONDS))
+        assertTrue("consent flow must resolve after answering", tapAndAwait("Consent", done))
         assertNull("no form error", error.get())
         assertTrue("consent given → ads allowed", consent.canRequestAds)
         assertTrue("EEA users must get a privacy-options entry point", consent.isPrivacyOptionsRequired)
@@ -197,8 +210,7 @@ class EeaConsentOnDeviceTest {
     @Test
     fun eeaUser_doNotConsent_resolvesWithoutError() {
         val (done, error) = openEeaForm()
-        tap("Do not consent")
-        assertTrue(done.await(20, TimeUnit.SECONDS))
+        assertTrue("consent flow must resolve after 'Do not consent'", tapAndAwait("Do not consent", done))
         assertNull("no form error", error.get())
         println("After 'Do not consent': canRequestAds=${consent.canRequestAds} privacyOptionsRequired=${consent.isPrivacyOptionsRequired}")
         assertTrue("EEA users must get a privacy-options entry point", consent.isPrivacyOptionsRequired)
@@ -207,8 +219,7 @@ class EeaConsentOnDeviceTest {
     @Test
     fun privacyOptionsForm_reopensAndCanChangeTheDecision() {
         val (done, _) = openEeaForm()
-        tap("Consent")
-        assertTrue(done.await(20, TimeUnit.SECONDS))
+        assertTrue("consent flow must resolve after answering", tapAndAwait("Consent", done))
 
         val dismissed = CountDownLatch(1)
         val error = AtomicReference<FormError?>(null)
@@ -229,8 +240,7 @@ class EeaConsentOnDeviceTest {
             SystemClock.sleep(600)
         }
         assertTrue("'Do not consent' reachable in the re-opened form (buttons=${visibleButtons()})", hasButton("Do not consent"))
-        tap("Do not consent")
-        assertTrue(dismissed.await(20, TimeUnit.SECONDS))
+        assertTrue("privacy form must close after 'Do not consent'", tapAndAwait("Do not consent", dismissed))
         assertNull("no form error", error.get())
     }
 
