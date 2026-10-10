@@ -43,6 +43,9 @@ internal fun AdView.loadTrackedBanner(
                     adsManager.emit(AdEvent.Loaded(AdFormat.BANNER, adUnitId, latencyMs = -1))
                 }
                 override fun onAdFailedToRefresh(adError: LoadAdError) {
+                    // The banner was destroyed (e.g. its screen closed) before the next refresh: no
+                    // request was made, so don't count one — it would understate the match rate.
+                    if (adError.code == LoadAdError.ErrorCode.CANCELLED) return
                     adsManager.emit(AdEvent.LoadRequested(AdFormat.BANNER, adUnitId))
                     adsManager.emit(AdEvent.LoadFailed(AdFormat.BANNER, adUnitId, adError.code, adError.message, null))
                 }

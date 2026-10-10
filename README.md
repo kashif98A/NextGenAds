@@ -41,7 +41,7 @@ SDK**. It covers every AdMob format: App Open, Interstitial, Rewarded, Rewarded 
 
 | | Version |
 | --- | --- |
-| **NextGenAds library** | **1.1.1** |
+| **NextGenAds library** | **1.1.2** |
 | Next-Gen Google Mobile Ads SDK (`ads-mobile-sdk`) | 1.5.0 |
 | User Messaging Platform (UMP, consent) | 4.0.0 |
 | Kotlin | 2.4.21 (JVM target 17) |
@@ -55,6 +55,13 @@ The library exposes `ads-mobile-sdk` and `user-messaging-platform` as `api` depe
 app gets those SDK classes automatically and doesn't need to declare them.
 
 ## What's new
+
+### 1.1.2
+
+- **More accurate banner match rate.** When a banner is destroyed (for example, its screen closes),
+  the SDK cancels its next auto-refresh. That cancellation was reported as a banner request plus a
+  `LoadFailed(CANCELLED)`, which understated the banner's match rate in `AdStats`. A cancelled
+  refresh is no longer reported. Ad delivery is unchanged.
 
 ### 1.1.1
 
@@ -101,7 +108,7 @@ dependencyResolutionManagement {
 ```kotlin
 // app/build.gradle.kts
 dependencies {
-    implementation("com.github.kashif98A:NextGenAds:1.1.1") // the git tag (or a commit hash)
+    implementation("com.github.kashif98A:NextGenAds:1.1.2") // the git tag (or a commit hash)
 }
 ```
 
@@ -490,7 +497,7 @@ adsManager.addEventListener { event ->
 
 | Event | When it fires |
 | --- | --- |
-| `LoadRequested` | A request was sent: the first load, every automatic retry, and every banner auto-refresh |
+| `LoadRequested` | A request was sent: the first load, every automatic retry, and every banner auto-refresh (not a refresh cancelled because the banner was destroyed) |
 | `Loaded(latencyMs)` | The request returned an ad (`latencyMs` is `-1` for a banner auto-refresh) |
 | `LoadFailed(code, message, retryInMs)` | The request failed. `retryInMs` is when the library will retry, or `null` if it won't (`willRetry`) |
 | `Expired` | A loaded ad passed its `expiryMs` without being shown and was thrown away |

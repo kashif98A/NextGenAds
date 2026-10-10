@@ -71,7 +71,7 @@ afterEvaluate {
         from(components["release"])
         groupId = "com.github.kashif98A"
         artifactId = "nextgenads"
-        version = "1.1.1"
+        version = "1.1.2"
       }
     }
   }
