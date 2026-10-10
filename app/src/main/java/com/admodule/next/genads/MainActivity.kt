@@ -77,9 +77,22 @@ class MainActivity : ComponentActivity() {
                 // Surfaces a re-openable "Privacy options" button once consent resolves (EEA users).
                 var privacyOptionsRequired by remember { mutableStateOf(false) }
 
-                // GDPR consent gate — runs once on entry. Ads are initialized ONLY after the UMP flow
-                // resolves and canRequestAds is true. This is the "call it from the main screen" hook;
-                // the identical call works from a dedicated splash Activity's onCreate().
+                // ══════════════════════════════════════════════════════════════════════════════
+                //  STEP 1 — START THE ADS PIPELINE  (do this ONCE, before requesting any ad)
+                // ──────────────────────────────────────────────────────────────────────────────
+                //  Nothing on this screen shows an ad until this block runs. The chain is:
+                //     gatherConsent(activity){}  →  canRequestAds == true  →  adsManager.initialize()
+                //  initialize() then AUTO-PRELOADS the likely-to-show units (App Open, Interstitial,
+                //  native pool) via the preloader in BaseApplication; rewarded formats load when this
+                //  dashboard opens (see DashboardScreen). Call this from your first Activity, AFTER
+                //  setContent (a splash screen's onCreate works identically).
+                //
+                //  PREREQUISITE: the AdMob App ID must be set in app/build.gradle.kts as
+                //  manifestPlaceholders["admobAppId"]; the :nextgenads manifest turns it into the
+                //  com.google.android.gms.ads.APPLICATION_ID <meta-data>. The UMP consent SDK reads it
+                //  from there; without it consent fails, canRequestAds stays false, initialize() never
+                //  runs, and NO ads load.
+                // ══════════════════════════════════════════════════════════════════════════════
                 LaunchedEffect(Unit) {
                     // Returning user with a stored consent decision: start the SDK right away, in
                     // parallel with the consent refresh, so the first ads aren't held up by the network.
@@ -90,7 +103,7 @@ class MainActivity : ComponentActivity() {
                     consentManager.gatherConsent(this@MainActivity) { _ ->
                         privacyOptionsRequired = consentManager.isPrivacyOptionsRequired
                         if (consentManager.canRequestAds) {
-                            adsManager.initialize()
+                            adsManager.initialize()   // ← the single call that boots the whole ad stack
                         }
                     }
                 }
@@ -229,15 +242,21 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        // PRELOAD strategy loader: relies on the cached interstitial (preloaded at app start / via the
-        // Preload button). Shows instantly if cached, otherwise waits briefly for an in-flight preload.
+        // ── HOW TO SHOW AN INTERSTITIAL — "PRELOAD" strategy (instant, uses a cached ad) ─────────
+        //  Best when you preloaded earlier and want an instant show. Three moving parts:
+        //    1) Preload ahead of time:   interstitialManager.loadAd()        (done at app start)
+        //    2) On the trigger, flip:    showInterstitialLoader = true       (see the card onClick)
+        //    3) The dialog below waits until the cached ad is ready, then calls:
+        //           interstitialManager.showAd(activity) { /* onDismiss */ }
+        //       The trailing lambda is onDismiss — it runs after the ad closes (or immediately if no
+        //       ad was ready). Here we use it to navigate to the next screen.
         var showInterstitialLoader by remember { mutableStateOf(false) }
         if (showInterstitialLoader) {
             AdStartingDialog(
-                isAdReady = { interstitialManager.isAdAvailable() },
+                isAdReady = { interstitialManager.isAdAvailable() },   // poll: is a cached ad ready?
                 onReadyToShow = {
                     showInterstitialLoader = false
-                    interstitialManager.showAd(this@MainActivity) {
+                    interstitialManager.showAd(this@MainActivity) {    // show it — lambda = onDismiss
                         // Ad closed → advance to the next screen.
                         onNavigateNext()
                     }
@@ -245,29 +264,49 @@ class MainActivity : ComponentActivity() {
             )
         }
 
-        // ON-DEMAND strategy loader: loads a FRESH interstitial at click time (independent of the
-        // preload cache) and displays it as soon as it is ready. Visibility is driven by the
-        // manager's onLoading callback.
+        // ── HOW TO SHOW AN INTERSTITIAL — "ON-DEMAND" strategy (load fresh at tap) ───────────────
+        //  Best when you did NOT preload. ONE call fetches and shows a brand-new ad (see the card
+        //  onClick below):
+        //     interstitialManager.loadAndShow(
+        //         activity,
+        //         onLoading = { loading -> /* toggle this loader overlay */ },
+        //         onDismiss = { /* ad closed, or failed to load */ }
+        //     )
+        //  onLoading(true/false) drives the overlay's visibility; this path never touches the
+        //  preload cache, so it won't disturb the "PRELOAD" interstitial above.
         var showInterstitialOnDemandLoader by remember { mutableStateOf(false) }
         if (showInterstitialOnDemandLoader) {
             AdLoadingDialog(message = "Loading ad")
         }
 
-        // Same overlay, shown before the App Open ad.
+        // ── HOW TO SHOW AN APP OPEN AD ──────────────────────────────────────────────────────────
+        //  AUTOMATIC: AppOpenManager already shows the cached ad every time the app returns to the
+        //  foreground (never over another full-screen ad or right after an ad click). Tune it with
+        //  appOpenManager.showOnResume / excludedActivities, or adsManager.skipNextAppOpen().
+        //  MANUAL (e.g. end of a splash), same preload-then-show pattern as the interstitial:
+        //     appOpenManager.showAd(activity) { /* onDismiss */ }
+        //  Here the manual call is wired to a card tap for the demo.
         var showAppOpenLoader by remember { mutableStateOf(false) }
         if (showAppOpenLoader) {
             AdStartingDialog(
                 isAdReady = { appOpenManager.isAdAvailable() },
                 onReadyToShow = {
                     showAppOpenLoader = false
-                    appOpenManager.showAd(this@MainActivity) {
+                    appOpenManager.showAd(this@MainActivity) {    // lambda = onDismiss
                         Toast.makeText(context, "App Open Closed.", Toast.LENGTH_SHORT).show()
                     }
                 }
             )
         }
 
-        // Same overlay, shown before the Rewarded ad.
+        // ── HOW TO SHOW A REWARDED AD ───────────────────────────────────────────────────────────
+        //  Rewarded ads take TWO callbacks — grant the reward in onUserEarnedReward:
+        //     rewardedManager.showAd(
+        //         activity,
+        //         onUserEarnedReward = { label, amount -> /* GRANT the reward here */ },
+        //         onDismiss = { }                          // optional; runs when the ad closes
+        //     )
+        //  onUserEarnedReward fires ONLY if the user watches long enough to earn it (may not fire).
         var showRewardedLoader by remember { mutableStateOf(false) }
         if (showRewardedLoader) {
             AdStartingDialog(
@@ -276,7 +315,7 @@ class MainActivity : ComponentActivity() {
                     showRewardedLoader = false
                     rewardedManager.showAd(
                         activity = this@MainActivity,
-                        onUserEarnedReward = { label, amount ->
+                        onUserEarnedReward = { label, amount ->       // ← credit the user here
                             virtualCoins += amount
                             Toast.makeText(context, "Earned: $amount $label!", Toast.LENGTH_LONG).show()
                         }
@@ -285,7 +324,13 @@ class MainActivity : ComponentActivity() {
             )
         }
 
-        // Same overlay, shown before the Rewarded Interstitial ad.
+        // ── HOW TO SHOW A REWARDED INTERSTITIAL AD ──────────────────────────────────────────────
+        //  Identical signature to the Rewarded ad — a rewarded ad that can appear at a transition:
+        //     rewardedInterstitialManager.showAd(
+        //         activity,
+        //         onUserEarnedReward = { label, amount -> /* GRANT the reward */ },
+        //         onDismiss = { }
+        //     )
         var showRewardedInterstitialLoader by remember { mutableStateOf(false) }
         if (showRewardedInterstitialLoader) {
             AdStartingDialog(
@@ -396,6 +441,10 @@ class MainActivity : ComponentActivity() {
             ) {
                 Button(
                     onClick = {
+                        // HOW TO PRELOAD/CACHE a full-screen ad: call loadAd() on its manager. It
+                        // fetches in the background (no UI) and is a no-op if one is already cached.
+                        // A later showAd()/isAdAvailable() then resolves instantly. This is normally
+                        // automatic after initialize(); this button just forces a manual refresh.
                         appOpenManager.loadAd()
                         interstitialManager.loadAd()
                         rewardedManager.loadAd()
@@ -471,6 +520,8 @@ class MainActivity : ComponentActivity() {
                     expiryLabel = "Loads on tap",
                     onClick = {
                         // Only proceed when enabled (remote-config flag) AND online; else nothing shows.
+                        // THE ACTUAL ON-DEMAND CALL: one method loads a fresh ad and shows it. onLoading
+                        // toggles the overlay; onDismiss runs after the ad closes (or fails to load).
                         if (interstitialManager.isEnabled && isOnline) {
                             showInterstitialOnDemandLoader = true
                             interstitialManager.loadAndShow(
@@ -565,8 +616,13 @@ class MainActivity : ComponentActivity() {
                 selectedTab = currentNativeTab,
                 onTabSelected = { currentNativeTab = it }
             ) {
-                // Do not build/load ad views until the SDK is initialized (which only happens after
-                // GDPR consent is resolved). Loading before init crashes the Next Gen SDK.
+                // ── HOW TO SHOW A NATIVE AD ─────────────────────────────────────────────────────
+                //  Just drop the composable into your layout and pass adsManager — it takes an ad
+                //  from the shared native pool (adsManager.nativeAds(), preloaded in BaseApplication),
+                //  shows a shimmer placeholder while waiting, and destroys the ad when it leaves:
+                //     NativeSmallAdView(adsManager)      // or NativeMediumAdView / NativeCollapsibleAdView
+                //  GATE: only compose it once isInitialized == true. Building a native/banner view
+                //  before the SDK is initialized (i.e. before consent resolves) throws in the Next Gen SDK.
                 if (isInitialized) {
                     when (currentNativeTab) {
                         0 -> NativeSmallAdView(
@@ -644,8 +700,13 @@ class MainActivity : ComponentActivity() {
                             .testTag("banner_showcase_container"),
                         contentAlignment = Alignment.Center
                     ) {
-                        // Same init gate as the native showcase — never load a banner before the SDK
-                        // is initialized (post-consent), or the Next Gen SDK throws.
+                        // ── HOW TO SHOW A BANNER AD ─────────────────────────────────────────────
+                        //  Same as native: drop the composable in and pass adsManager. Each one
+                        //  self-loads and sizes itself:
+                        //     AdaptiveBannerAdView(adsManager)                         // anchored adaptive
+                        //     CollapsibleBannerAdView(adsManager, direction = "bottom") // or "top"
+                        //     BannerAdView(adsManager)                                  // fixed standard
+                        //  GATE: only compose once isInitialized == true (see the native note above).
                         if (isInitialized) {
                             when (currentBannerTab) {
                                 0 -> AdaptiveBannerAdView(adsManager = adsManager)

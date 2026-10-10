@@ -1,20 +1,36 @@
 package com.admodule.next.genads.adsImp.ui
 
 import android.view.ViewGroup
+import androidx.compose.animation.core.LinearEasing
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
@@ -24,6 +40,14 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.window.DialogWindowProvider
 import kotlinx.coroutines.delay
+
+// Brand palette (kept in sync with the demo app's design language).
+private val BrandBlue = Color(0xFF005FB0)
+private val BrandBlueSoft = Color(0xFFD1E1FF)
+private val AppBackground = Color(0xFFF7F9FF)
+private val CardBorder = Color(0xFFE1E2EC)
+private val TextPrimary = Color(0xFF1C1B1F)
+private val TextMuted = Color(0xFF44474E)
 
 /**
  * A brief full-screen "Ad starting…" overlay shown BEFORE a full-screen ad (interstitial,
@@ -89,29 +113,8 @@ fun AdStartingDialog(
             dismissOnClickOutside = false
         )
     ) {
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(Color.White),
-            contentAlignment = Alignment.Center
-        ) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
-                Spacer(Modifier.height(20.dp))
-                Text(
-                    text = "$message…",
-                    color = Color(0xFF1C1B1F),
-                    fontSize = 16.sp,
-                    fontWeight = FontWeight.SemiBold
-                )
-                Spacer(Modifier.height(6.dp))
-                Text(
-                    text = "Please wait",
-                    color = Color(0xFF1C1B1F).copy(alpha = 0.6f),
-                    fontSize = 12.sp
-                )
-            }
-        }
+        FullScreenDialogWindow()
+        AdLoadingContent(title = message, subtitle = "Getting your ad ready")
     }
 }
 
@@ -131,39 +134,125 @@ fun AdLoadingDialog(message: String = "Loading ad") {
             dismissOnClickOutside = false
         )
     ) {
-        // Force the dialog window to cover the ENTIRE screen with no scrim, so the overlay reads as a
-        // true full-screen takeover (like an interstitial) rather than a centered, dimmed card.
-        val view = LocalView.current
-        SideEffect {
-            (view.parent as? DialogWindowProvider)?.window?.apply {
-                setLayout(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.MATCH_PARENT
-                )
-                setDimAmount(0f)
-            }
-        }
+        FullScreenDialogWindow()
+        AdLoadingContent(title = message, subtitle = "Fetching a fresh ad")
+    }
+}
 
-        Box(
+/**
+ * Forces the hosting dialog window to cover the ENTIRE screen with no scrim, so the overlay reads as
+ * a true full-screen takeover (like the interstitial it precedes) rather than a centered, dimmed card.
+ */
+@Composable
+private fun FullScreenDialogWindow() {
+    val view = LocalView.current
+    SideEffect {
+        (view.parent as? DialogWindowProvider)?.window?.apply {
+            setLayout(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT
+            )
+            setDimAmount(0f)
+        }
+    }
+}
+
+/**
+ * Shared, on-brand loading visual for both interstitial loaders: a soft full-screen backdrop with a
+ * centered rounded card — a "SPONSORED" pill, a branded spinner, the [title]/[subtitle] copy, and a
+ * slim indeterminate progress bar — so the wait feels intentional and matches the app's UI.
+ */
+@Composable
+private fun AdLoadingContent(title: String, subtitle: String) {
+    // Subtle pulse so the card feels alive even on a fast (near-instant) cached show.
+    val transition = rememberInfiniteTransition(label = "adLoadingPulse")
+    val pulseAlpha by transition.animateFloat(
+        initialValue = 0.55f,
+        targetValue = 1f,
+        animationSpec = infiniteRepeatable(
+            animation = tween(durationMillis = 900, easing = LinearEasing),
+            repeatMode = RepeatMode.Reverse
+        ),
+        label = "pulseAlpha"
+    )
+
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(AppBackground),
+        contentAlignment = Alignment.Center
+    ) {
+        Card(
+            shape = RoundedCornerShape(24.dp),
+            colors = CardDefaults.cardColors(containerColor = Color.White),
+            border = BorderStroke(1.dp, CardBorder),
+            elevation = CardDefaults.cardElevation(defaultElevation = 2.dp),
             modifier = Modifier
-                .fillMaxSize()
-                .background(Color.White),
-            contentAlignment = Alignment.Center
+                .fillMaxWidth()
+                .padding(horizontal = 44.dp)
         ) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
-                Spacer(Modifier.height(20.dp))
+            Column(
+                modifier = Modifier.padding(horizontal = 28.dp, vertical = 30.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                // "SPONSORED" pill — signals an ad is on its way (AdMob UX best practice).
+                Box(
+                    modifier = Modifier
+                        .background(BrandBlueSoft, RoundedCornerShape(8.dp))
+                        .padding(horizontal = 10.dp, vertical = 4.dp)
+                ) {
+                    Text(
+                        text = "SPONSORED",
+                        color = BrandBlue,
+                        fontSize = 9.sp,
+                        fontWeight = FontWeight.Bold,
+                        letterSpacing = 1.5.sp
+                    )
+                }
+
+                Spacer(Modifier.height(24.dp))
+
+                // Branded spinner sitting inside a soft tinted disc.
+                Box(
+                    modifier = Modifier
+                        .size(72.dp)
+                        .alpha(pulseAlpha)
+                        .clip(RoundedCornerShape(36.dp))
+                        .background(BrandBlueSoft.copy(alpha = 0.5f)),
+                    contentAlignment = Alignment.Center
+                ) {
+                    CircularProgressIndicator(
+                        color = BrandBlue,
+                        strokeWidth = 3.dp,
+                        modifier = Modifier.size(44.dp)
+                    )
+                }
+
+                Spacer(Modifier.height(22.dp))
+
                 Text(
-                    text = "$message…",
-                    color = Color(0xFF1C1B1F),
-                    fontSize = 16.sp,
-                    fontWeight = FontWeight.SemiBold
+                    text = "$title…",
+                    color = TextPrimary,
+                    fontSize = 17.sp,
+                    fontWeight = FontWeight.Bold
                 )
                 Spacer(Modifier.height(6.dp))
                 Text(
-                    text = "Fetching a fresh ad",
-                    color = Color(0xFF1C1B1F).copy(alpha = 0.6f),
+                    text = subtitle,
+                    color = TextMuted,
                     fontSize = 12.sp
+                )
+
+                Spacer(Modifier.height(24.dp))
+
+                // Slim indeterminate track reinforces "working…" without a misleading fake percentage.
+                LinearProgressIndicator(
+                    color = BrandBlue,
+                    trackColor = BrandBlueSoft,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(4.dp)
+                        .clip(RoundedCornerShape(2.dp))
                 )
             }
         }
