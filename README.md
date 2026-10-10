@@ -14,7 +14,7 @@ SDK**. It covers every AdMob format: App Open, Interstitial, Rewarded, Rewarded 
 ## Contents
 
 1. [Versions](#versions)
-2. [What's new in 1.1.0](#whats-new-in-110)
+2. [What's new](#whats-new)
 3. [Installation](#installation)
 4. [Quick start (3 steps)](#quick-start-3-steps)
 5. [GDPR consent form (UMP)](#gdpr-consent-form-ump)
@@ -41,7 +41,7 @@ SDK**. It covers every AdMob format: App Open, Interstitial, Rewarded, Rewarded 
 
 | | Version |
 | --- | --- |
-| **NextGenAds library** | **1.1.0** |
+| **NextGenAds library** | **1.1.1** |
 | Next-Gen Google Mobile Ads SDK (`ads-mobile-sdk`) | 1.5.0 |
 | User Messaging Platform (UMP, consent) | 4.0.0 |
 | Kotlin | 2.4.21 (JVM target 17) |
@@ -54,7 +54,16 @@ SDK**. It covers every AdMob format: App Open, Interstitial, Rewarded, Rewarded 
 The library exposes `ads-mobile-sdk` and `user-messaging-platform` as `api` dependencies, so your
 app gets those SDK classes automatically and doesn't need to declare them.
 
-## What's new in 1.1.0
+## What's new
+
+### 1.1.1
+
+- **Redesigned ad-loading overlay.** `AdStartingDialog` and `AdLoadingDialog` now show a full-screen
+  card with a "SPONSORED" pill, a branded spinner and a slim progress bar. Their parameters and
+  behavior are unchanged, so no code changes are needed.
+
+### 1.1.0
+
 
 - **Ad events and metrics.** `adsManager.addEventListener { }` reports every request, load, failure,
   expiry, impression, click and impression revenue for all 6 formats. The ready-made `AdStats`
@@ -92,7 +101,7 @@ dependencyResolutionManagement {
 ```kotlin
 // app/build.gradle.kts
 dependencies {
-    implementation("com.github.kashif98A:NextGenAds:1.1.0") // the git tag (or a commit hash)
+    implementation("com.github.kashif98A:NextGenAds:1.1.1") // the git tag (or a commit hash)
 }
 ```
 
