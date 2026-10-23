@@ -27,6 +27,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -85,6 +86,10 @@ fun AdStartingDialog(
     minVisibleMillis: Long = 600L,
     message: String = "Ad starting"
 ) {
+    // The effect outlives recompositions; always call the LATEST lambdas, not the first ones.
+    val currentIsAdReady by rememberUpdatedState(isAdReady)
+    val currentOnReadyToShow by rememberUpdatedState(onReadyToShow)
+
     LaunchedEffect(Unit) {
         val pollMillis = 150L
         var waited = 0L
@@ -92,17 +97,17 @@ fun AdStartingDialog(
         // Fast path: if the ad is already preloaded/cached, show it immediately — no artificial wait.
         // Only when we actually have to wait for a fresh load do we keep the overlay up (with a brief
         // minimum so it doesn't flash), capped at maxWaitMillis so it can never hang.
-        if (!isAdReady()) {
+        if (!currentIsAdReady()) {
             delay(minVisibleMillis)
             waited += minVisibleMillis
 
-            while (!isAdReady() && waited < maxWaitMillis) {
+            while (!currentIsAdReady() && waited < maxWaitMillis) {
                 delay(pollMillis)
                 waited += pollMillis
             }
         }
 
-        onReadyToShow()
+        currentOnReadyToShow()
     }
 
     Dialog(

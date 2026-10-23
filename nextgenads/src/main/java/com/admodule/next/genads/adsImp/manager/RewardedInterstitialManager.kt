@@ -100,28 +100,36 @@ class RewardedInterstitialManager(
             val unit = adUnitId
             requestStartedAt = System.currentTimeMillis()
             adsManager.emit(AdEvent.LoadRequested(AdFormat.REWARDED_INTERSTITIAL, unit))
-            RewardedInterstitialAd.load(
-                adsManager.buildAdRequest(unit),
-                object : AdLoadCallback<RewardedInterstitialAd> {
-                    override fun onAdLoaded(ad: RewardedInterstitialAd) {
-                        rewardedInterstitialAd = ad
-                        loadTime = System.currentTimeMillis()
-                        _isAdLoaded.value = true
-                        loader.onLoaded()
-                        loadedUnitId = unit
-                        adsManager.emit(AdEvent.Loaded(AdFormat.REWARDED_INTERSTITIAL, unit, System.currentTimeMillis() - requestStartedAt))
-                        Log.i(TAG, "Rewarded Interstitial Ad loaded successfully.")
-                    }
+            try {
+                RewardedInterstitialAd.load(
+                    adsManager.buildAdRequest(unit),
+                    object : AdLoadCallback<RewardedInterstitialAd> {
+                        override fun onAdLoaded(ad: RewardedInterstitialAd) {
+                            // Publish the ad LAST, so whoever sees it also sees its loadTime and unit
+                            // (otherwise a concurrent showAd() reads loadTime == 0 and drops it as expired).
+                            loadTime = System.currentTimeMillis()
+                            loadedUnitId = unit
+                            rewardedInterstitialAd = ad
+                            _isAdLoaded.value = true
+                            loader.onLoaded()
+                            adsManager.emit(AdEvent.Loaded(AdFormat.REWARDED_INTERSTITIAL, unit, System.currentTimeMillis() - requestStartedAt))
+                            Log.i(TAG, "Rewarded Interstitial Ad loaded successfully.")
+                        }
 
-                    override fun onAdFailedToLoad(adError: LoadAdError) {
-                        _isAdLoaded.value = false
-                        rewardedInterstitialAd = null
-                        Log.e(TAG, "Rewarded Interstitial Ad failed to load: ${adError.message} (code: ${adError.code})")
-                        val retryIn = loader.onFailed(adError.code) { load() }
-                        adsManager.emit(AdEvent.LoadFailed(AdFormat.REWARDED_INTERSTITIAL, unit, adError.code, adError.message, retryIn))
+                        override fun onAdFailedToLoad(adError: LoadAdError) {
+                            _isAdLoaded.value = false
+                            rewardedInterstitialAd = null
+                            Log.e(TAG, "Rewarded Interstitial Ad failed to load: ${adError.message} (code: ${adError.code})")
+                            val retryIn = loader.onFailed(adError.code) { load() }
+                            adsManager.emit(AdEvent.LoadFailed(AdFormat.REWARDED_INTERSTITIAL, unit, adError.code, adError.message, retryIn))
+                        }
                     }
-                }
-            )
+                )
+            } catch (e: Exception) {
+                // A synchronous SDK throw must not leave the load slot claimed forever.
+                Log.e(TAG, "Rewarded Interstitial load() threw: ${e.message}")
+                loader.onAborted()
+            }
         }
     }
 
@@ -149,21 +157,42 @@ class RewardedInterstitialManager(
             return
         }
 
-        val ad = rewardedInterstitialAd ?: run {
+        // AdMob policy: never pop a full-screen ad once the user has left the app (e.g. they pressed
+        // Home while a loader was waiting for this ad).
+        if (!adsManager.canShowFullScreenAd || activity.isFinishing || activity.isDestroyed) {
+            Log.d(TAG, "App is in the background or the activity is gone; not showing Rewarded Interstitial.")
+            onDismiss()
+            return
+        }
+        // Claim the single full-screen slot: never stack on another full-screen ad (e.g. an App Open
+        // on screen) and never show the same cached ad twice on a double tap.
+        if (!adsManager.fullScreenAdShowing.compareAndSet(false, true)) {
+            Log.d(TAG, "Another full-screen ad is already showing; skipping Rewarded Interstitial.")
             onDismiss()
             return
         }
 
+        val ad = rewardedInterstitialAd ?: run {
+            adsManager.fullScreenAdShowing.set(false)
+            onDismiss()
+            return
+        }
+
+        // Take the ad out of the cache while it is on screen: a preload during the show then fills
+        // the cache with the NEXT ad (instead of being nulled by this ad's dismiss), and an ad that
+        // crosses its expiry while showing is never reported as Expired.
+        val shownUnit = loadedUnitId
+        rewardedInterstitialAd = null
+        _isAdLoaded.value = false
+
         ad.adEventCallback = object : RewardedInterstitialAdEventCallback {
-            override fun onAdImpression() = adsManager.emit(AdEvent.Impression(AdFormat.REWARDED_INTERSTITIAL, loadedUnitId))
-            override fun onAdClicked() = adsManager.emit(AdEvent.Clicked(AdFormat.REWARDED_INTERSTITIAL, loadedUnitId))
-            override fun onAdPaid(value: AdValue) = adsManager.emit(value.toPaid(AdFormat.REWARDED_INTERSTITIAL, loadedUnitId))
+            override fun onAdImpression() = adsManager.emit(AdEvent.Impression(AdFormat.REWARDED_INTERSTITIAL, shownUnit))
+            override fun onAdClicked() = adsManager.emit(AdEvent.Clicked(AdFormat.REWARDED_INTERSTITIAL, shownUnit))
+            override fun onAdPaid(value: AdValue) = adsManager.emit(value.toPaid(AdFormat.REWARDED_INTERSTITIAL, shownUnit))
 
             override fun onAdDismissedFullScreenContent() {
                 Log.d(TAG, "Rewarded Interstitial Ad dismissed.")
-                adsManager.emit(AdEvent.Dismissed(AdFormat.REWARDED_INTERSTITIAL, loadedUnitId))
-                rewardedInterstitialAd = null
-                _isAdLoaded.value = false
+                adsManager.emit(AdEvent.Dismissed(AdFormat.REWARDED_INTERSTITIAL, shownUnit))
                 adsManager.fullScreenAdShowing.set(false)
                 // Preload the next rewarded interstitial ad
                 loadAd()
@@ -173,9 +202,7 @@ class RewardedInterstitialManager(
 
             override fun onAdFailedToShowFullScreenContent(fullScreenContentError: FullScreenContentError) {
                 Log.e(TAG, "Rewarded Interstitial Ad failed to show: ${fullScreenContentError.message}")
-                adsManager.emit(AdEvent.ShowFailed(AdFormat.REWARDED_INTERSTITIAL, loadedUnitId, fullScreenContentError.message))
-                rewardedInterstitialAd = null
-                _isAdLoaded.value = false
+                adsManager.emit(AdEvent.ShowFailed(AdFormat.REWARDED_INTERSTITIAL, shownUnit, fullScreenContentError.message))
                 adsManager.fullScreenAdShowing.set(false)
                 // Preload to try to recover State Flow
                 loadAd()
@@ -188,7 +215,6 @@ class RewardedInterstitialManager(
         }
 
         // Show Rewarded Interstitial ad
-        adsManager.fullScreenAdShowing.set(true)
         try {
             ad.show(
                 activity,
@@ -205,6 +231,11 @@ class RewardedInterstitialManager(
         } catch (e: Exception) {
             Log.e(TAG, "Rewarded Interstitial show() threw: ${e.message}")
             adsManager.fullScreenAdShowing.set(false)
+            // The ad was never shown: put it back unless a newer one has been cached meanwhile.
+            if (rewardedInterstitialAd == null) {
+                rewardedInterstitialAd = ad
+                _isAdLoaded.value = true
+            }
             onDismiss()
         }
     }

@@ -423,7 +423,7 @@ takes up no space if the load fails, and cleans up when removed from the screen.
 ```kotlin
 val isInitialized by adsManager.isInitialized.collectAsStateWithLifecycle()
 
-if (isInitialized) { // create banners only after consent + SDK start
+if (isInitialized) { // optional: banners already wait for consent + SDK start themselves
     BannerAdView(adsManager)                                    // 320×50 standard
     AdaptiveBannerAdView(adsManager)                            // full-width anchored adaptive (recommended)
     CollapsibleBannerAdView(adsManager, direction = "bottom")   // "bottom" or "top"
@@ -440,16 +440,67 @@ if (isInitialized) { // create banners only after consent + SDK start
 
 ### Native ads
 
-Three ready-made layouts. They take their ads from a **shared pool**, so an ad shows instantly when
-one is cached and a loaded ad is never thrown away.
+Seven ready-made templates, all with the same look: a white, borderless card, dark text, and your
+theme's `primary` color for the "Ad" badge and button. They take their ads from a **shared pool**,
+so an ad shows instantly when one is cached and a loaded ad is never thrown away.
 
 ```kotlin
-if (isInitialized) {
-    NativeSmallAdView(adsManager)        // icon + headline + body + button
-    NativeMediumAdView(adsManager)       // large media + icon + headline + body + button
-    NativeCollapsibleAdView(adsManager)  // media the user can shrink or expand (never hidden; policy-safe)
+NativeSmallAdView(adsManager)        // icon + headline + body + full-width button
+NativeMediumAdView(adsManager)       // media on top + icon + headline + body + button
+NativeBannerAdView(adsManager)       // slim ~70dp strip: icon, headline, rating, compact button
+NativeHorizontalAdView(adsManager)   // article style: 120dp media on the left, text on the right
+NativeFeedAdView(adsManager)         // social-feed post: header, text, edge-to-edge media, action bar
+NativeLargeAdView(adsManager)        // app-install card: big media, icon, ★ rating · store · price
+```
+
+| Template | Best for | Media |
+| --- | --- | --- |
+| `NativeSmallAdView` | Inside screens with little space | Only for video ads (see below) |
+| `NativeMediumAdView` | General content screens | Always, 160dp |
+| `CollapsibleNativeAdScaffold` | Pinned to the bottom of the screen like a collapsible banner (see below) | Expanded: 120–160dp. Collapsed: hidden for image ads, 120dp for video ads (AdMob requires video to stay visible) |
+| `NativeBannerAdView` | List rows, bottom bars | Only for video ads (see below) |
+| `NativeHorizontalAdView` | News / article lists with thumbnails | Always, 120×120dp |
+| `NativeFeedAdView` | Between posts in a feed | Always, edge to edge |
+| `NativeLargeAdView` | Result, "level complete" and empty-state screens | Always, follows the creative |
+
+**Collapsible native (works like a collapsible banner).** Wrap the screen in
+`CollapsibleNativeAdScaffold`. The ad is pinned to the bottom of the screen, slides up **expanded over
+the content**, and the tab on the right of its top edge **collapses** it to a slim strip (small icon, headline,
+inline button) and **expands** it again. The content gets a bottom padding equal to the collapsed
+strip (plus the navigation bar), so it is never hidden behind it:
+
+```kotlin
+CollapsibleNativeAdScaffold(adsManager, startCollapsed = false) { padding ->
+    MyScreenContent(Modifier.padding(padding))
 }
 ```
+
+`NativeCollapsibleAdView(adsManager)` is the same ad without the scaffold, for anchoring it yourself
+(e.g. in a `Scaffold`'s `bottomBar`); there the expanded ad pushes the content up instead of
+overlaying it.
+
+**Small template styles.** `NativeSmallAdView` has five designs; pick one with `style`:
+
+```kotlin
+NativeSmallAdView(adsManager, style = NativeSmallStyle.COMPACT)
+```
+
+| `NativeSmallStyle` | Look |
+| --- | --- |
+| `CLASSIC` (default) | Icon + "Ad" badge, headline, body; full-width button underneath |
+| `COMPACT` | One row: icon, headline + body, compact button on the right — the shortest |
+| `RATING` | App-install focused: icon, headline, "★★★★☆ 4.5 · Store · Price", body, full-width button |
+| `CENTERED` | Icon on top, everything centered — suits dialogs and grids |
+| `MINIMAL` | Text first: "Ad · advertiser", large headline and body, small icon + outlined button |
+
+If you switch `style` at runtime, wrap the call in `key(style) { … }` so the ad view is rebuilt.
+
+**Video ads in compact templates.** AdMob requires video to play in a `MediaView` at least 120dp
+in size. Small and Banner have no media slot, so when the pool hands them a video ad they add a media
+block above their content. Image ads keep the compact layout.
+
+Each template renders nothing until the SDK is initialized, so wrapping it in `if (isInitialized)`
+is optional.
 
 Parameters: `adsManager`, `modifier`, `adUnitId = AdUnitIds.NATIVE`, `isEnabled = true`.
 
@@ -588,7 +639,7 @@ reports then show which placement earns and which underperforms.
 | `isFullScreenAdShowing` | `true` while any full-screen ad is on screen |
 | `appId` | The App ID read from the manifest |
 | `addEventListener(listener)` / `removeEventListener(listener)` | Receive every `AdEvent` (see [Ad events](#ad-events-match-rate--show-rate)) |
-| `networkMonitor.isOnline: Flow<Boolean>` | Live online/offline status |
+| `isOnline: StateFlow<Boolean>` | Live online/offline status, shared by the whole library (one network callback). Prefer it over `networkMonitor.isOnline`, which registers a new callback per collector |
 
 ---
 
@@ -662,7 +713,7 @@ traffic.
 | Build error: `requires a placeholder substitution … admobAppId` | Same fix: set the placeholder in your app's `defaultConfig`. |
 | Logcat: `Window couldn't find content container view` from UMP | `gatherConsent` ran before `setContent`. Call it after the Activity has content (the library retries, but it costs ~2 s). |
 | Ads load in the demo but not in your app | `adsManager.initialize()` is never called. It must run after `gatherConsent` with `canRequestAds == true`. |
-| Banner or native missing, or a crash when the screen opens | It was created before the SDK finished starting. Wrap inline ads in `if (isInitialized)` (see [Banners](#banners)). |
+| Banner or native missing when the screen opens | Inline ads render nothing until the SDK has started (they appear by themselves once it has). Wrapping them in `if (isInitialized)` lets you show your own placeholder meanwhile (see [Banners](#banners)). |
 | App Open shows over the splash screen | Add the splash to `appOpenManager.excludedActivities`. |
 | App Open shows after a share or purchase screen | Call `adsManager.skipNextAppOpen()` before sending the user out of the app. |
 | Logcat: `Giving up after 4 retries` | The unit has no fill, or the ad unit ID is wrong. In SDK 1.5.0 an **invalid ad unit is reported as `NETWORK_ERROR` (HTTP 400/403)**, so check the ID first. |

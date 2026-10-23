@@ -131,28 +131,36 @@ class AppOpenManager(
             val unit = adUnitId
             requestStartedAt = System.currentTimeMillis()
             adsManager.emit(AdEvent.LoadRequested(AdFormat.APP_OPEN, unit))
-            AppOpenAd.load(
-                adsManager.buildAdRequest(unit),
-                object : AdLoadCallback<AppOpenAd> {
-                    override fun onAdLoaded(ad: AppOpenAd) {
-                        appOpenAd = ad
-                        loadTime = System.currentTimeMillis()
-                        _isAdLoaded.value = true
-                        loader.onLoaded()
-                        loadedUnitId = unit
-                        adsManager.emit(AdEvent.Loaded(AdFormat.APP_OPEN, unit, System.currentTimeMillis() - requestStartedAt))
-                        Log.i(TAG, "App Open Ad loaded successfully.")
-                    }
+            try {
+                AppOpenAd.load(
+                    adsManager.buildAdRequest(unit),
+                    object : AdLoadCallback<AppOpenAd> {
+                        override fun onAdLoaded(ad: AppOpenAd) {
+                            // Publish the ad LAST, so whoever sees it also sees its loadTime and unit
+                            // (otherwise a concurrent showAd() reads loadTime == 0 and drops it as expired).
+                            loadTime = System.currentTimeMillis()
+                            loadedUnitId = unit
+                            appOpenAd = ad
+                            _isAdLoaded.value = true
+                            loader.onLoaded()
+                            adsManager.emit(AdEvent.Loaded(AdFormat.APP_OPEN, unit, System.currentTimeMillis() - requestStartedAt))
+                            Log.i(TAG, "App Open Ad loaded successfully.")
+                        }
 
-                    override fun onAdFailedToLoad(adError: LoadAdError) {
-                        _isAdLoaded.value = false
-                        appOpenAd = null
-                        Log.e(TAG, "App Open Ad failed to load: ${adError.message} (code: ${adError.code})")
-                        val retryIn = loader.onFailed(adError.code) { load() }
-                        adsManager.emit(AdEvent.LoadFailed(AdFormat.APP_OPEN, unit, adError.code, adError.message, retryIn))
+                        override fun onAdFailedToLoad(adError: LoadAdError) {
+                            _isAdLoaded.value = false
+                            appOpenAd = null
+                            Log.e(TAG, "App Open Ad failed to load: ${adError.message} (code: ${adError.code})")
+                            val retryIn = loader.onFailed(adError.code) { load() }
+                            adsManager.emit(AdEvent.LoadFailed(AdFormat.APP_OPEN, unit, adError.code, adError.message, retryIn))
+                        }
                     }
-                }
-            )
+                )
+            } catch (e: Exception) {
+                // A synchronous SDK throw must not leave the load slot claimed forever.
+                Log.e(TAG, "App Open load() threw: ${e.message}")
+                loader.onAborted()
+            }
         }
     }
 
@@ -172,6 +180,13 @@ class AppOpenManager(
             onDismiss()
             return
         }
+        // AdMob policy: never pop a full-screen ad once the user has left the app (e.g. they pressed
+        // Home while a loader was waiting for this ad).
+        if (!adsManager.canShowFullScreenAd || activity.isFinishing || activity.isDestroyed) {
+            Log.d(TAG, "App is in the background or the activity is gone; not showing App Open.")
+            onDismiss()
+            return
+        }
         if (!adsManager.fullScreenAdShowing.compareAndSet(false, true)) {
             Log.d(TAG, "Another full-screen ad is already showing; skipping App Open.")
             onDismiss()
@@ -184,16 +199,21 @@ class AppOpenManager(
             return
         }
 
+        // Take the ad out of the cache while it is on screen: a preload during the show then fills
+        // the cache with the NEXT ad (instead of being nulled by this ad's dismiss), and an ad that
+        // crosses its expiry while showing is never reported as Expired.
+        val shownUnit = loadedUnitId
+        appOpenAd = null
+        _isAdLoaded.value = false
+
         ad.adEventCallback = object : AppOpenAdEventCallback {
-            override fun onAdImpression() = adsManager.emit(AdEvent.Impression(AdFormat.APP_OPEN, loadedUnitId))
-            override fun onAdClicked() = adsManager.emit(AdEvent.Clicked(AdFormat.APP_OPEN, loadedUnitId))
-            override fun onAdPaid(value: AdValue) = adsManager.emit(value.toPaid(AdFormat.APP_OPEN, loadedUnitId))
+            override fun onAdImpression() = adsManager.emit(AdEvent.Impression(AdFormat.APP_OPEN, shownUnit))
+            override fun onAdClicked() = adsManager.emit(AdEvent.Clicked(AdFormat.APP_OPEN, shownUnit))
+            override fun onAdPaid(value: AdValue) = adsManager.emit(value.toPaid(AdFormat.APP_OPEN, shownUnit))
 
             override fun onAdDismissedFullScreenContent() {
                 Log.d(TAG, "App Open Ad dismissed.")
-                adsManager.emit(AdEvent.Dismissed(AdFormat.APP_OPEN, loadedUnitId))
-                appOpenAd = null
-                _isAdLoaded.value = false
+                adsManager.emit(AdEvent.Dismissed(AdFormat.APP_OPEN, shownUnit))
                 adsManager.fullScreenAdShowing.set(false)
                 // Immediately preload the next App Open Ad
                 loadAd()
@@ -203,9 +223,7 @@ class AppOpenManager(
 
             override fun onAdFailedToShowFullScreenContent(fullScreenContentError: FullScreenContentError) {
                 Log.e(TAG, "App Open Ad failed to show: ${fullScreenContentError.message}")
-                adsManager.emit(AdEvent.ShowFailed(AdFormat.APP_OPEN, loadedUnitId, fullScreenContentError.message))
-                appOpenAd = null
-                _isAdLoaded.value = false
+                adsManager.emit(AdEvent.ShowFailed(AdFormat.APP_OPEN, shownUnit, fullScreenContentError.message))
                 adsManager.fullScreenAdShowing.set(false)
                 // Immediately preload next App Open Ad
                 loadAd()
@@ -222,6 +240,11 @@ class AppOpenManager(
         } catch (e: Exception) {
             Log.e(TAG, "App Open show() threw: ${e.message}")
             adsManager.fullScreenAdShowing.set(false)
+            // The ad was never shown: put it back unless a newer one has been cached meanwhile.
+            if (appOpenAd == null) {
+                appOpenAd = ad
+                _isAdLoaded.value = true
+            }
             onDismiss()
         }
     }
