@@ -41,7 +41,7 @@ SDK**. It covers every AdMob format: App Open, Interstitial, Rewarded, Rewarded 
 
 | | Version |
 | --- | --- |
-| **NextGenAds library** | **1.1.2** |
+| **NextGenAds library** | **1.1.3** |
 | Next-Gen Google Mobile Ads SDK (`ads-mobile-sdk`) | 1.5.0 |
 | User Messaging Platform (UMP, consent) | 4.0.0 |
 | Kotlin | 2.4.21 (JVM target 17) |
@@ -55,6 +55,38 @@ The library exposes `ads-mobile-sdk` and `user-messaging-platform` as `api` depe
 app gets those SDK classes automatically and doesn't need to declare them.
 
 ## What's new
+
+### 1.1.3
+
+**New native templates.** Every native template now shares one look: a white, borderless card with
+dark text and your theme's `primary` color for the "Ad" badge and button.
+
+- **Four new templates:** `NativeBannerAdView` (slim strip), `NativeHorizontalAdView` (media on the
+  left), `NativeFeedAdView` (social-feed post) and `NativeLargeAdView` (app-install card). See
+  [Native ads](#native-ads).
+- **`NativeSmallAdView` has five styles** via `style = NativeSmallStyle.…`: `CLASSIC` (default,
+  unchanged call sites), `COMPACT`, `RATING`, `CENTERED`, `MINIMAL`.
+- **Collapsible native works like a collapsible banner.** New `CollapsibleNativeAdScaffold` pins it
+  to the bottom of the screen: it opens expanded over the content, and the tab on the right of its top
+  edge collapses it to a slim strip and expands it again. `NativeCollapsibleAdView` has the new
+  design too.
+- **Video ads in compact templates** (Small, Banner) now play in a `MediaView`, as AdMob requires.
+
+**Bug fixes.**
+
+- Full-screen ads can no longer stack on each other or show twice on a double tap, and are never shown
+  once the user has left the app (AdMob policy).
+- A freshly loaded full-screen ad could be dropped as "expired" by a show at the same moment; a preload
+  during a show no longer wipes the next cached ad.
+- An exception thrown by the SDK during a load no longer crashes the app or blocks that format.
+- On-demand interstitial (`loadAndShow`): a double tap no longer loads and shows two ads, and the
+  loader is always lowered.
+- Banners and native ads wait for the SDK to initialize by themselves (no ad request before consent).
+- One shared network callback (`adsManager.isOnline`) instead of one per ad load.
+- The native pool backs off after failed loads instead of re-requesting for every slot.
+- `initialize { }` callbacks now run on the main thread.
+- `skipNextAppOpen()` expires after 30 minutes instead of silently suppressing a later App Open ad.
+- The consent form is no longer shown on an Activity destroyed mid-request (e.g. rotation).
 
 ### 1.1.2
 
@@ -108,7 +140,7 @@ dependencyResolutionManagement {
 ```kotlin
 // app/build.gradle.kts
 dependencies {
-    implementation("com.github.kashif98A:NextGenAds:1.1.2") // the git tag (or a commit hash)
+    implementation("com.github.kashif98A:NextGenAds:1.1.3") // the git tag (or a commit hash)
 }
 ```
 
