@@ -13,13 +13,13 @@ The full, up-to-date integration guide is in README.md:
 
 This file previously described copying the old `ads/` source folder into a
 project (SDK 1.2.0, initializing ads with no consent step). That approach is
-obsolete: use the :nextgenads library (v1.1.2) from JitPack, and always gather
+obsolete: use the :nextgenads library (v1.1.3) from JitPack, and always gather
 consent before initializing ads. The old text remains in git history.
 
 Minimum integration, for reference:
 
   1. app/build.gradle.kts
-       implementation("com.github.kashif98A:NextGenAds:1.1.2")
+       implementation("com.github.kashif98A:NextGenAds:1.1.3")
        android { defaultConfig {
            manifestPlaceholders["admobAppId"] = "ca-app-pub-XXXX~YYYY"   // REQUIRED
        } }

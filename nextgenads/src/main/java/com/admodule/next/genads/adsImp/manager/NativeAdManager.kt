@@ -15,6 +15,7 @@ import kotlinx.coroutines.flow.getAndUpdate
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * A small pool of preloaded native ads for one ad unit. Obtain it with [AdsManager.nativeAds].
@@ -44,10 +45,25 @@ class NativeAdManager internal constructor(
     private val inFlight = AtomicInteger(0)
     private val failureCount = MutableStateFlow(0)
 
-    /** Tops the pool up to [poolSize]. Cheap to call repeatedly — never over-requests. */
+    /** Consecutive failures and when the last one happened — drives the [preload] cooldown. */
+    private val consecutiveFailures = AtomicInteger(0)
+    private val lastFailureAt = AtomicLong(0L)
+
+    /**
+     * Tops the pool up to [poolSize]. Cheap to call repeatedly — never over-requests. After a failed
+     * load it backs off (5s, 10s, 20s… up to 2 min): without that, a screen with many native slots
+     * under no-fill fired a fresh request for every slot, dragging the match rate down and risking
+     * throttling.
+     */
     fun preload() {
         if (!isEnabled || !adsManager.isInitialized.value) return
         dropExpired()
+        val failures = consecutiveFailures.get()
+        if (failures > 0) {
+            val cooldown = (FAILURE_COOLDOWN_BASE_MS shl (failures - 1).coerceAtMost(5))
+                .coerceAtMost(FAILURE_COOLDOWN_MAX_MS)
+            if (System.currentTimeMillis() - lastFailureAt.get() < cooldown) return
+        }
         while (true) {
             val loading = inFlight.get()
             if (pool.value.size + loading >= poolSize) return
@@ -86,6 +102,7 @@ class NativeAdManager internal constructor(
                 Log.d(TAG, "No network available; native load skipped.")
                 inFlight.decrementAndGet()
                 failureCount.update { it + 1 }
+                // Offline is not the unit's fault: no backoff — the network-restore preload refills.
                 return@launch
             }
             Log.d(TAG, "Loading native ad for pool: $adUnitId")
@@ -108,11 +125,14 @@ class NativeAdManager internal constructor(
                             }
                             adsManager.emit(AdEvent.Loaded(AdFormat.NATIVE, adUnitId, System.currentTimeMillis() - startedAt))
                             pool.update { it + Entry(nativeAd, System.currentTimeMillis()) }
+                            consecutiveFailures.set(0)
                             inFlight.decrementAndGet()
                             Log.d(TAG, "Native ad pooled (${pool.value.size}/$poolSize).")
                         }
 
                         override fun onAdFailedToLoad(adError: LoadAdError) {
+                            lastFailureAt.set(System.currentTimeMillis())
+                            consecutiveFailures.incrementAndGet()
                             inFlight.decrementAndGet()
                             failureCount.update { it + 1 }
                             Log.e(TAG, "Native ad failed to load: ${adError.message} (code: ${adError.code})")
@@ -123,6 +143,8 @@ class NativeAdManager internal constructor(
                 )
             } catch (e: Exception) {
                 Log.e(TAG, "Critical error creating NativeAdLoader: ${e.message}")
+                lastFailureAt.set(System.currentTimeMillis())
+                consecutiveFailures.incrementAndGet()
                 inFlight.decrementAndGet()
                 failureCount.update { it + 1 }
             }
@@ -158,4 +180,9 @@ class NativeAdManager internal constructor(
 
     private fun isExpired(entry: Entry): Boolean =
         System.currentTimeMillis() - entry.loadTime > expiryMs
+
+    private companion object {
+        const val FAILURE_COOLDOWN_BASE_MS = 5_000L
+        const val FAILURE_COOLDOWN_MAX_MS = 120_000L
+    }
 }

@@ -3,6 +3,7 @@ package com.admodule.next.genads
 import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.*
@@ -37,10 +38,15 @@ import com.admodule.next.genads.adsImp.ui.AdLoadingDialog
 import com.admodule.next.genads.adsImp.ui.AdStartingDialog
 import com.admodule.next.genads.adsImp.ui.AdaptiveBannerAdView
 import com.admodule.next.genads.adsImp.ui.BannerAdView
+import com.admodule.next.genads.adsImp.ui.CollapsibleNativeAdScaffold
 import com.admodule.next.genads.adsImp.ui.CollapsibleBannerAdView
-import com.admodule.next.genads.adsImp.ui.NativeCollapsibleAdView
+import com.admodule.next.genads.adsImp.ui.NativeBannerAdView
+import com.admodule.next.genads.adsImp.ui.NativeFeedAdView
+import com.admodule.next.genads.adsImp.ui.NativeHorizontalAdView
+import com.admodule.next.genads.adsImp.ui.NativeLargeAdView
 import com.admodule.next.genads.adsImp.ui.NativeMediumAdView
 import com.admodule.next.genads.adsImp.ui.NativeSmallAdView
+import com.admodule.next.genads.adsImp.ui.NativeSmallStyle
 import com.admodule.next.genads.ui.theme.MyApplicationTheme
 import kotlinx.coroutines.launch
 
@@ -111,6 +117,8 @@ class MainActivity : ComponentActivity() {
                 when (currentScreen) {
                     "next" -> NextScreen(onBack = { currentScreen = "dashboard" })
 
+                    "collapsible" -> CollapsibleNativeDemoScreen(onBack = { currentScreen = "dashboard" })
+
                     else -> {
                         var currentSection by remember { mutableStateOf("status") }
                         val scrollState = rememberScrollState()
@@ -142,6 +150,7 @@ class MainActivity : ComponentActivity() {
                             DashboardScreen(
                                 scrollState = scrollState,
                                 onNavigateNext = { currentScreen = "next" },
+                                onOpenCollapsibleDemo = { currentScreen = "collapsible" },
                                 privacyOptionsRequired = privacyOptionsRequired,
                                 onPrivacyOptions = { consentManager.showPrivacyOptionsForm(this@MainActivity) },
                                 modifier = Modifier.padding(innerPadding)
@@ -215,18 +224,20 @@ class MainActivity : ComponentActivity() {
     fun DashboardScreen(
         scrollState: ScrollState,
         onNavigateNext: () -> Unit,
+        onOpenCollapsibleDemo: () -> Unit,
         privacyOptionsRequired: Boolean,
         onPrivacyOptions: () -> Unit,
         modifier: Modifier = Modifier
     ) {
         val context = LocalContext.current
         val isInitialized by adsManager.isInitialized.collectAsStateWithLifecycle()
-        val isOnline by adsManager.networkMonitor.isOnline.collectAsStateWithLifecycle(initialValue = true)
+        val isOnline by adsManager.isOnline.collectAsStateWithLifecycle()
 
         // Local state to simulate virtual user loyalty point system
         var virtualCoins by remember { mutableStateOf(100) }
         var currentBannerTab by remember { mutableStateOf(0) } // 0: Adaptive, 1: Collapsible, 2: Standard
-        var currentNativeTab by remember { mutableStateOf(0) } // 0: Small, 1: Medium
+        var currentNativeTab by remember { mutableStateOf(0) } // index into NATIVE_TEMPLATES
+        var smallNativeStyle by remember { mutableStateOf(NativeSmallStyle.CLASSIC) }
 
         val isAppOpenAvailable by appOpenManager.isAdLoaded.collectAsStateWithLifecycle()
         val isInterstitialAvailable by interstitialManager.isAdLoaded.collectAsStateWithLifecycle()
@@ -483,7 +494,7 @@ class MainActivity : ComponentActivity() {
                 verticalAlignment = Alignment.CenterVertically
             ) {
                 Text(
-                    text = "FULL-SCREEN FORMTS",
+                    text = "FULL-SCREEN FORMATS",
                     fontSize = 10.sp,
                     fontWeight = FontWeight.Bold,
                     color = Color(0xFF44474E),
@@ -543,7 +554,7 @@ class MainActivity : ComponentActivity() {
                     title = "App Open Ad",
                     isLoaded = isAppOpenAvailable,
                     isLoading = !isAppOpenAvailable && isInitialized,
-                    expiryLabel = "4m exp.",
+                    expiryLabel = "4h exp.",
                     onClick = {
                         // Only proceed when enabled (remote-config flag) AND online; else nothing shows.
                         if (appOpenManager.isEnabled && isOnline) {
@@ -608,11 +619,7 @@ class MainActivity : ComponentActivity() {
             }
 
             NativeShowcaseCard(
-                title = when (currentNativeTab) {
-                    0 -> "Native Small Preview"
-                    1 -> "Native Medium Preview"
-                    else -> "Native Collapsible Preview"
-                },
+                title = "Native ${NATIVE_TEMPLATES[currentNativeTab]} Preview",
                 selectedTab = currentNativeTab,
                 onTabSelected = { currentNativeTab = it }
             ) {
@@ -620,22 +627,86 @@ class MainActivity : ComponentActivity() {
                 //  Just drop the composable into your layout and pass adsManager — it takes an ad
                 //  from the shared native pool (adsManager.nativeAds(), preloaded in BaseApplication),
                 //  shows a shimmer placeholder while waiting, and destroys the ad when it leaves:
-                //     NativeSmallAdView(adsManager)      // or NativeMediumAdView / NativeCollapsibleAdView
+                //     NativeSmallAdView(adsManager)      // style = NativeSmallStyle.COMPACT / RATING / …
+                //  or any template below:
+                //     NativeMediumAdView / NativeBannerAdView /
+                //     NativeHorizontalAdView / NativeFeedAdView / NativeLargeAdView
                 //  GATE: only compose it once isInitialized == true. Building a native/banner view
                 //  before the SDK is initialized (i.e. before consent resolves) throws in the Next Gen SDK.
                 if (isInitialized) {
                     when (currentNativeTab) {
-                        0 -> NativeSmallAdView(
-                            adsManager = adsManager,
-                            modifier = Modifier.testTag("native_small_ad_view")
-                        )
+                        0 -> Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                            // The small template has several designs: pick one with `style`.
+                            Row(
+                                modifier = Modifier.horizontalScroll(rememberScrollState()),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                NativeSmallStyle.entries.forEach { style ->
+                                    FilterChip(
+                                        selected = smallNativeStyle == style,
+                                        onClick = { smallNativeStyle = style },
+                                        label = {
+                                            Text(
+                                                style.name.lowercase().replaceFirstChar { it.uppercase() },
+                                                fontSize = 11.sp,
+                                                fontWeight = FontWeight.Bold
+                                            )
+                                        }
+                                    )
+                                }
+                            }
+                            // key(): a new style needs a freshly built ad view (the layout is built once).
+                            key(smallNativeStyle) {
+                                NativeSmallAdView(
+                                    adsManager = adsManager,
+                                    style = smallNativeStyle,
+                                    modifier = Modifier.testTag("native_small_ad_view")
+                                )
+                            }
+                        }
                         1 -> NativeMediumAdView(
                             adsManager = adsManager,
                             modifier = Modifier.testTag("native_medium_ad_view")
                         )
-                        else -> NativeCollapsibleAdView(
+                        // A collapsible native lives at the BOTTOM OF THE SCREEN, like a collapsible
+                        // banner, so it can't be previewed inside this card: open the demo screen.
+                        2 -> Column(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(10.dp)
+                        ) {
+                            Text(
+                                "Anchored at the bottom of the screen like a collapsible banner: opens " +
+                                    "expanded over the content, the tab on the right of its top edge collapses it to a " +
+                                    "strip and expands it again.",
+                                fontSize = 12.sp,
+                                color = Color(0xFF44474E),
+                                textAlign = TextAlign.Center
+                            )
+                            Button(
+                                onClick = onOpenCollapsibleDemo,
+                                modifier = Modifier.testTag("native_collapsible_demo_button"),
+                                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF005FB0)),
+                                shape = RoundedCornerShape(12.dp)
+                            ) {
+                                Text("Open anchored demo", fontWeight = FontWeight.Bold)
+                            }
+                        }
+                        3 -> NativeBannerAdView(
                             adsManager = adsManager,
-                            modifier = Modifier.testTag("native_collapsible_ad_view")
+                            modifier = Modifier.testTag("native_banner_ad_view")
+                        )
+                        4 -> NativeHorizontalAdView(
+                            adsManager = adsManager,
+                            modifier = Modifier.testTag("native_horizontal_ad_view")
+                        )
+                        5 -> NativeFeedAdView(
+                            adsManager = adsManager,
+                            modifier = Modifier.testTag("native_feed_ad_view")
+                        )
+                        else -> NativeLargeAdView(
+                            adsManager = adsManager,
+                            modifier = Modifier.testTag("native_large_ad_view")
                         )
                     }
                 } else {
@@ -723,8 +794,59 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    /**
+     * HOW TO SHOW A COLLAPSIBLE NATIVE AD: wrap the screen in CollapsibleNativeAdScaffold. The ad is
+     * pinned to the bottom, opens expanded over the content, and collapses / expands from the tab on
+     * its top edge. `padding` keeps the content clear of the collapsed strip and the navigation bar.
+     */
+    @Composable
+    fun CollapsibleNativeDemoScreen(onBack: () -> Unit) {
+        BackHandler(onBack = onBack)
+        CollapsibleNativeAdScaffold(
+            adsManager = adsManager,
+            modifier = Modifier.background(Color(0xFFF7F9FF))
+        ) { padding ->
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .verticalScroll(rememberScrollState())
+                    .statusBarsPadding()
+                    .padding(padding)
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                Text("Collapsible native", fontSize = 22.sp, fontWeight = FontWeight.Bold, color = Color(0xFF1C1B1F))
+                Text(
+                    "The ad below opened expanded over this screen. Tap the tab on the right of its top edge to collapse " +
+                        "it to a strip, and again to expand it. Scroll: the content always stays clear of the " +
+                        "collapsed strip.",
+                    fontSize = 13.sp,
+                    color = Color(0xFF44474E)
+                )
+                repeat(12) { index ->
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        shape = RoundedCornerShape(16.dp),
+                        colors = CardDefaults.cardColors(containerColor = Color.White)
+                    ) {
+                        Text(
+                            "Sample content row ${index + 1}",
+                            modifier = Modifier.padding(16.dp),
+                            color = Color(0xFF1C1B1F)
+                        )
+                    }
+                }
+                OutlinedButton(onClick = onBack, modifier = Modifier.fillMaxWidth()) {
+                    Text("Back to Dashboard", fontWeight = FontWeight.Bold)
+                }
+            }
+        }
+    }
+
     @Composable
     fun NextScreen(onBack: () -> Unit) {
+        // System back returns to the dashboard (without this it closed the app).
+        BackHandler(onBack = onBack)
         Scaffold(
             modifier = Modifier
                 .fillMaxSize()
@@ -1080,34 +1202,29 @@ class MainActivity : ComponentActivity() {
                 }
 
                 // Inner Tab switcher representing mock navigation
-                PrimaryTabRow(
+                // Scrollable: there are more templates than fit across the screen.
+                PrimaryScrollableTabRow(
                     selectedTabIndex = selectedTab,
                     containerColor = Color.White,
                     contentColor = Color(0xFF005FB0),
+                    edgePadding = 8.dp,
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Tab(
-                        selected = selectedTab == 0,
-                        onClick = { onTabSelected(0) },
-                        text = { Text("Native Small", fontSize = 11.sp, fontWeight = FontWeight.Bold) }
-                    )
-                    Tab(
-                        selected = selectedTab == 1,
-                        onClick = { onTabSelected(1) },
-                        text = { Text("Native Medium", fontSize = 11.sp, fontWeight = FontWeight.Bold) }
-                    )
-                    Tab(
-                        selected = selectedTab == 2,
-                        onClick = { onTabSelected(2) },
-                        text = { Text("Collapsible", fontSize = 11.sp, fontWeight = FontWeight.Bold) }
-                    )
+                    NATIVE_TEMPLATES.forEachIndexed { index, name ->
+                        Tab(
+                            selected = selectedTab == index,
+                            onClick = { onTabSelected(index) },
+                            text = { Text(name, fontSize = 11.sp, fontWeight = FontWeight.Bold) }
+                        )
+                    }
                 }
 
-                // Real integrated View
+                // Real integrated View, on a light backdrop so the white, borderless ad cards stand out.
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .padding(16.dp)
+                        .background(Color(0xFFF0F2F7))
+                        .padding(horizontal = 8.dp, vertical = 16.dp)
                 ) {
                     content()
                 }
@@ -1177,3 +1294,6 @@ class MainActivity : ComponentActivity() {
 
     data class NavItem(val label: String, val icon: String, val key: String)
 }
+
+/** Native templates shown in the dashboard's showcase, in tab order. */
+private val NATIVE_TEMPLATES = listOf("Small", "Medium", "Collapsible", "Banner", "Horizontal", "Feed", "Large")

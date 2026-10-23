@@ -93,6 +93,14 @@ class ConsentManager(context: Context) {
             activity,
             params,
             {
+                // The update is async: the Activity may have been destroyed meanwhile (e.g. rotation).
+                // Presenting the form on it would fail or leak it; canRequestAds already reflects the
+                // refreshed state, and the recreated Activity's gatherConsent shows the form if needed.
+                if (!activity.isAlive()) {
+                    Log.d(TAG, "Activity gone before the consent form could show; resolving without it.")
+                    onConsentResolved(null)
+                    return@requestConsentInfoUpdate
+                }
                 // Info updated: show the form if UMP requires it, otherwise this returns with no UI.
                 UserMessagingPlatform.loadAndShowConsentFormIfRequired(activity) { formError ->
                     if (formError != null) {

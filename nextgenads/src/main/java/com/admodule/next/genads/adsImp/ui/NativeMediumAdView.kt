@@ -36,11 +36,13 @@ fun NativeMediumAdView(
     // blocks the FIRST request; an ad already on screen survives a brief network drop.
     if (!isEnabled || !rememberCanShowInlineAd(adsManager)) return
 
+    // Accent colors follow the app theme; the card itself is always white, so its text uses fixed
+    // dark colors (theme onSurface would turn light-on-white in dark mode).
     val primaryColor = MaterialTheme.colorScheme.primary.toArgb()
     val onPrimaryColor = MaterialTheme.colorScheme.onPrimary.toArgb()
-    val surfaceColor = MaterialTheme.colorScheme.surfaceVariant.toArgb()
-    val onSurfaceColor = MaterialTheme.colorScheme.onSurfaceVariant.toArgb()
-    val textColor = MaterialTheme.colorScheme.onSurface.toArgb()
+    val surfaceColor = Color.WHITE
+    val onSurfaceColor = Color.parseColor("#5F6368")
+    val textColor = Color.parseColor("#1C1B1F")
 
     // Drawn from the shared pool: instant when an ad is cached, and never wasted if this view leaves
     // the screen before the load finishes. The ad is destroyed when this slot leaves composition.
@@ -96,11 +98,13 @@ private fun createDynamicMediumNativeView(
             ViewGroup.LayoutParams.MATCH_PARENT,
             ViewGroup.LayoutParams.WRAP_CONTENT
         )
-        setPadding(16, 16, 16, 16)
+        val vertical = 14.dpToPx(context)
+        val horizontal = CARD_HORIZONTAL_PADDING_DP.dpToPx(context)
+        setPadding(horizontal, vertical, horizontal, vertical)
+        // Clean white card: no border, just rounded corners.
         background = GradientDrawable().apply {
             setColor(surfaceColor)
-            cornerRadius = 18f
-            setStroke(2, primaryColor)
+            cornerRadius = 16.dpToPx(context).toFloat()
         }
     }
 
@@ -121,9 +125,10 @@ private fun createDynamicMediumNativeView(
         ).apply {
             bottomMargin = 12.dpToPx(context)
         }
+        clipToOutline = true
         background = GradientDrawable().apply {
-            setColor(Color.DKGRAY)
-            cornerRadius = 12f
+            setColor(Color.parseColor("#F1F3F4"))
+            cornerRadius = 12.dpToPx(context).toFloat()
         }
     }
     mainLayout.addView(mediaView)
@@ -152,8 +157,8 @@ private fun createDynamicMediumNativeView(
         scaleType = ImageView.ScaleType.CENTER_CROP
         clipToOutline = true
         background = GradientDrawable().apply {
-            setColor(Color.LTGRAY)
-            cornerRadius = 10f
+            setColor(Color.parseColor("#F1F3F4"))
+            cornerRadius = 12.dpToPx(context).toFloat()
         }
     }
     iconContainer.addView(iconImageView)
@@ -179,18 +184,20 @@ private fun createDynamicMediumNativeView(
     val adBadge = TextView(context).apply {
         text = "Ad"
         setTextColor(onPrimaryColor)
-        setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 9f)
-        setPadding(6, 2, 6, 2)
+        setTextSize(android.util.TypedValue.COMPLEX_UNIT_SP, 10f)
+        typeface = android.graphics.Typeface.DEFAULT_BOLD
+        setPadding(6.dpToPx(context), 1.dpToPx(context), 6.dpToPx(context), 1.dpToPx(context))
         gravity = Gravity.CENTER
         background = GradientDrawable().apply {
             setColor(primaryColor)
-            cornerRadius = 4f
+            cornerRadius = 4.dpToPx(context).toFloat()
         }
         layoutParams = LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.WRAP_CONTENT,
             ViewGroup.LayoutParams.WRAP_CONTENT
         ).apply {
             marginEnd = 6.dpToPx(context)
+            bottomMargin = 4.dpToPx(context)
         }
     }
     tagAndBadge.addView(adBadge)
@@ -237,14 +244,19 @@ private fun createDynamicMediumNativeView(
         setTextColor(onPrimaryColor)
         textSize = 14f
         typeface = android.graphics.Typeface.DEFAULT_BOLD
-        setPadding(24, 12, 24, 12)
+        isAllCaps = false
+        gravity = Gravity.CENTER
+        stateListAnimator = null // drop the default Material button shadow on the flat white card
+        minHeight = 0
+        minimumHeight = 0
+        setPadding(16.dpToPx(context), 0, 16.dpToPx(context), 0)
         background = GradientDrawable().apply {
             setColor(primaryColor)
-            cornerRadius = 24f
+            cornerRadius = 12.dpToPx(context).toFloat()
         }
         layoutParams = LinearLayout.LayoutParams(
             ViewGroup.LayoutParams.MATCH_PARENT,
-            ViewGroup.LayoutParams.WRAP_CONTENT
+            44.dpToPx(context)
         )
     }
     mainLayout.addView(ctaButton)

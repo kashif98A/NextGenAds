@@ -5,6 +5,7 @@ import android.content.pm.PackageManager
 import android.os.Bundle
 import android.util.Log
 import androidx.lifecycle.DefaultLifecycleObserver
+import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.ProcessLifecycleOwner
 import com.google.android.gms.ads.mediation.admob.AdMobAdapter
@@ -15,18 +16,21 @@ import com.google.android.libraries.ads.mobile.sdk.common.AdRequest
 import com.google.android.libraries.ads.mobile.sdk.initialization.InitializationConfig
 import com.admodule.next.genads.adsImp.AdUnitIds
 import com.admodule.next.genads.adsImp.data.NetworkMonitor
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
-import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
 
 class AdsManager(
     internal val context: Context,
@@ -40,10 +44,18 @@ class AdsManager(
         const val APP_ID = "ca-app-pub-3940256099942544~3347511713"
 
         private const val APP_ID_META_DATA = "com.google.android.gms.ads.APPLICATION_ID"
+
+        /** How long a [skipNextAppOpen] request stays valid (covers a long visit to an ad's landing page). */
+        private const val APP_OPEN_SKIP_WINDOW_MS = 30 * 60 * 1000L
     }
 
     /** Process-wide background scope for SDK init, loads and retries (the SDK must run off main). */
-    internal val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    internal val scope = CoroutineScope(
+        SupervisorJob() + Dispatchers.IO + CoroutineExceptionHandler { _, e ->
+            // Last-resort net: an unexpected SDK exception must never crash the host app.
+            Log.e(TAG, "Uncaught exception in ads scope", e)
+        }
+    )
 
     private val _isInitialized = MutableStateFlow(false)
     val isInitialized: StateFlow<Boolean> = _isInitialized.asStateFlow()
@@ -55,20 +67,37 @@ class AdsManager(
     internal val fullScreenAdShowing = AtomicBoolean(false)
     val isFullScreenAdShowing: Boolean get() = fullScreenAdShowing.get()
 
-    private val skipNextAppOpen = AtomicBoolean(false)
+    private val skipNextAppOpenAt = AtomicLong(0L)
 
     @Volatile
     var isAppInForeground: Boolean = false
         private set
 
+    /**
+     * True while the process is STARTED, read straight from [ProcessLifecycleOwner] — unlike
+     * [isAppInForeground] it never depends on observer ordering. Full-screen ads may only be shown
+     * while this holds: popping one after the user left the app violates AdMob policy.
+     */
+    internal val canShowFullScreenAd: Boolean
+        get() = ProcessLifecycleOwner.get().lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)
+
     private val nativeAdManagers = ConcurrentHashMap<String, NativeAdManager>()
 
     private val eventListeners = CopyOnWriteArrayList<AdEventListener>()
 
+    /**
+     * Process-wide connectivity, backed by ONE network callback. [NetworkMonitor.isOnline] is cold:
+     * collecting it per ad load / per ad slot registered a new ConnectivityManager callback each time
+     * (an IPC, and Android caps an app at 100 registered callbacks). Starts optimistic so a slow first
+     * callback never blocks a load; a real offline request just fails with NETWORK_ERROR.
+     */
+    val isOnline: StateFlow<Boolean> =
+        networkMonitor.isOnline.stateIn(scope, SharingStarted.Eagerly, true)
+
     init {
         // Collect network changes to reactively preload or handle states if needed
         scope.launch {
-            networkMonitor.isOnline.collect { online ->
+            isOnline.collect { online ->
                 Log.d(TAG, "Network status changed: Online=$online")
                 if (online && _isInitialized.value) {
                     // Trigger preloads when internet returns if not already loaded
@@ -96,7 +125,8 @@ class AdsManager(
     /**
      * Initializes the Next Gen GMA SDK. Safe to call more than once (e.g. early for returning users
      * who already consented AND again after the consent refresh) — only the first call initializes,
-     * and every [onComplete] is delivered once initialization finishes.
+     * and every [onComplete] is delivered on the main thread once initialization finishes (or fails —
+     * check [isInitialized] inside it).
      */
     fun initialize(onComplete: () -> Unit = {}) {
         if (_isInitialized.value) {
@@ -133,9 +163,16 @@ class AdsManager(
     }
 
     private fun drainInitCallbacks() {
-        while (true) {
-            val callback = pendingInitCallbacks.poll() ?: return
-            callback()
+        // The SDK reports init on a worker thread; callers typically touch UI in onComplete.
+        CoroutineScope(Dispatchers.Main).launch {
+            while (true) {
+                val callback = pendingInitCallbacks.poll() ?: return@launch
+                try {
+                    callback()
+                } catch (e: Exception) {
+                    Log.e(TAG, "initialize() onComplete threw", e)
+                }
+            }
         }
     }
 
@@ -191,9 +228,7 @@ class AdsManager(
     /**
      * Checks if the app is online before requesting ads.
      */
-    suspend fun isNetworkAvailable(): Boolean {
-        return networkMonitor.isOnline.first()
-    }
+    suspend fun isNetworkAvailable(): Boolean = isOnline.value
 
     /**
      * The shared native ad pool for [adUnitId]. Every native composable using the same unit draws
@@ -230,9 +265,16 @@ class AdsManager(
      * banner/native ad is clicked; call it yourself before sending the user out of the app on purpose
      * (share sheet, in-app purchase, system settings, a permission screen…).
      */
-    fun skipNextAppOpen() = skipNextAppOpen.set(true)
+    fun skipNextAppOpen() = skipNextAppOpenAt.set(System.currentTimeMillis())
 
-    internal fun consumeAppOpenSkip(): Boolean = skipNextAppOpen.getAndSet(false)
+    /**
+     * True (once) if a skip was requested recently. The window bounds a skip that never got consumed
+     * — e.g. a click that didn't leave the app — so it can't silently eat an App Open hours later.
+     */
+    internal fun consumeAppOpenSkip(): Boolean {
+        val at = skipNextAppOpenAt.getAndSet(0L)
+        return at != 0L && System.currentTimeMillis() - at <= APP_OPEN_SKIP_WINDOW_MS
+    }
 
     // Forward preloads to specific lazy-initialized manager hooks
     @Volatile

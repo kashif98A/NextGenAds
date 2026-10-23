@@ -94,13 +94,14 @@ fun NativeAdPlaceholder(
         modifier = modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(16.dp))
-            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.18f))
-            .padding(12.dp),
+            // Mirrors the real small / medium native cards: white and borderless.
+            .background(androidx.compose.ui.graphics.Color.White)
+            .padding(horizontal = 10.dp, vertical = 14.dp),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         if (isMedium) {
             // Top media block
-            Bone(brush, Modifier.fillMaxWidth().height(150.dp), corner = 14.dp)
+            Bone(brush, Modifier.fillMaxWidth().height(160.dp), corner = 12.dp)
         }
 
         // Icon + headline/body row
@@ -109,7 +110,7 @@ fun NativeAdPlaceholder(
             verticalAlignment = Alignment.CenterVertically,
             horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
-            Bone(brush, Modifier.size(if (isMedium) 44.dp else 56.dp), corner = 12.dp)
+            Bone(brush, Modifier.size(if (isMedium) 48.dp else 56.dp), corner = 12.dp)
             Column(
                 modifier = Modifier.weight(1f),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
@@ -126,6 +127,60 @@ fun NativeAdPlaceholder(
         }
 
         // Full-width CTA bar — matches the real layout for both small and medium.
-        Bone(brush, Modifier.fillMaxWidth().height(if (isMedium) 42.dp else 38.dp), corner = 22.dp)
+        Bone(brush, Modifier.fillMaxWidth().height(44.dp), corner = 12.dp)
+    }
+}
+
+/** Loading skeleton for [NativeBannerAdView]: icon, two text lines and a compact CTA pill. */
+@Composable
+internal fun NativeBannerPlaceholder(modifier: Modifier = Modifier) {
+    val brush = rememberShimmerBrush()
+    Row(
+        modifier = modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .background(androidx.compose.ui.graphics.Color.White)
+            .padding(horizontal = 8.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        Bone(brush, Modifier.size(48.dp), corner = 10.dp)
+        Column(
+            modifier = Modifier.weight(1f),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Bone(brush, Modifier.fillMaxWidth(0.8f).height(12.dp), corner = 6.dp)
+            Bone(brush, Modifier.fillMaxWidth(0.5f).height(10.dp), corner = 6.dp)
+        }
+        Bone(brush, Modifier.size(width = 76.dp, height = 36.dp), corner = 18.dp)
+    }
+}
+
+/** Loading skeleton for [NativeHorizontalAdView]: square media on the left, text on the right, CTA below. */
+@Composable
+internal fun NativeHorizontalPlaceholder(modifier: Modifier = Modifier) {
+    val brush = rememberShimmerBrush()
+    Column(
+        modifier = modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(16.dp))
+            .background(androidx.compose.ui.graphics.Color.White)
+            .padding(horizontal = 10.dp, vertical = 12.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            Bone(brush, Modifier.size(120.dp), corner = 12.dp)
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Bone(brush, Modifier.size(width = 24.dp, height = 14.dp), corner = 4.dp)
+                Bone(brush, Modifier.fillMaxWidth().height(14.dp), corner = 6.dp)
+                Bone(brush, Modifier.fillMaxWidth(0.7f).height(14.dp), corner = 6.dp)
+                Bone(brush, Modifier.fillMaxWidth(0.5f).height(10.dp), corner = 6.dp)
+                Bone(brush, Modifier.fillMaxWidth(0.9f).height(10.dp), corner = 6.dp)
+            }
+        }
+        Bone(brush, Modifier.fillMaxWidth().height(44.dp), corner = 12.dp)
     }
 }
